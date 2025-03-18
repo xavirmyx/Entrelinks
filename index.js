@@ -208,26 +208,26 @@ bot.onText(/\/menu/, async (msg) => {
     const admins = await bot.getChatAdministrators(adminGroupChatId);
     const isAdmin = admins.some(admin => admin.user.id === userId);
 
-    let menuText = '📋 **Menú del Bot EntreHijos**\n\n' +
-      '**Comandos para Usuarios Normales**\n' +
-      '🚨 **/report <número>** - Reportar enlaces que no funcionan\n' +
-      '📊 **/my_stats** - Muestra tus estadísticas de interacciones\n' +
-      '🔗 **/active_links** - Lista enlaces activos\n' +
-      'ℹ️ **/link_info <número>** - Información de un enlace\n' +
-      '📋 **/ayuda** - Lista de comandos para usuarios\n';
+    let menuText = '*📋 Menú del Bot EntreHijos*\n\n' +
+      '*Comandos para Usuarios Normales*\n' +
+      '🚨 */report <número>* - Reportar enlaces que no funcionan\n' +
+      '📊 */my_stats* - Muestra tus estadísticas de interacciones\n' +
+      '🔗 */active_links* - Lista enlaces activos\n' +
+      'ℹ️ */link_info <número>* - Información de un enlace\n' +
+      '📋 */ayuda* - Lista de comandos para usuarios\n';
 
     if (isAdmin && chatId === adminGroupChatId) {
-      menuText += '\n**Comandos para Administradores**\n' +
-        '🔍 **/visto <número>** - Muestra quién vio un enlace\n' +
-        '📈 **/estadistica** - Estadísticas de interacciones\n' +
-        '🚦 **/status** - Estado del bot\n' +
-        '🚫 **/revoke <número>** - Revoca un enlace\n' +
-        '⚠️ **/alert <número>** - Alerta sobre un enlace\n' +
-        '🔗 **/list_links** - Lista todos los enlaces generados\n' +
-        '⏳ **/extend_link <número> <horas>** - Extiende la expiración de un enlace\n' +
-        '📝 **/generate_report** - Genera un reporte detallado\n' +
-        '🧹 **/clear_stats** - Limpia estadísticas\n' +
-        '⚙️ **/set_max_links <número>** - Establece el límite de enlaces antes de alerta';
+      menuText += '\n*Comandos para Administradores*\n' +
+        '🔍 */visto <número>* - Muestra quién vio un enlace\n' +
+        '📈 */estadistica* - Estadísticas de interacciones\n' +
+        '🚦 */status* - Estado del bot\n' +
+        '🚫 */revoke <número>* - Revoca un enlace\n' +
+        '⚠️ */alert <número>* - Alerta sobre un enlace\n' +
+        '🔗 */list_links* - Lista todos los enlaces generados\n' +
+        '⏳ */extend_link <número> <horas>* - Extiende la expiración de un enlace\n' +
+        '📝 */generate_report* - Genera un reporte detallado\n' +
+        '🧹 */clear_stats* - Limpia estadísticas\n' +
+        '⚙️ */set_max_links <número>* - Establece el límite de enlaces antes de alerta';
     }
 
     await bot.sendMessage(chatId, menuText, { parse_mode: 'Markdown' });
