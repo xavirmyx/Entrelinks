@@ -250,10 +250,11 @@ bot.onText(/\/menu/, async (msg) => {
     const isAdmin = admins.some(admin => admin.user.id === userId);
 
     let menuText = '*📋 Menú del Bot EntreHijos*\n\n' +
-      '*Comando para Todos*\n' +
-      '🚨 */report <número>* - Reporta un enlace que no funciona\n';
+      '*Comandos para Todos*\n' +
+      '🚨 */report <número>* - Reporta un enlace que no funciona\n' +
+      'ℹ️ */ayuda* - Explicación de cómo reportar enlaces\n';
 
-    if (isAdmin && chatId === adminGroupChatId) {
+    if (isAdmin && chatId.toString() === adminGroupChatId) {
       menuText += '\n*Comandos para Administradores*\n' +
         '🔍 */visto <número>* - Muestra quién interactuó con un enlace\n' +
         '📈 */estadistica* - Top 10 usuarios por interacciones\n' +
@@ -290,6 +291,18 @@ bot.onText(/\/menu/, async (msg) => {
     console.error('❌ Error en /menu:', error.message);
     await bot.sendMessage(chatId, '⚠️ Error al mostrar el menú.');
   }
+});
+
+bot.onText(/\/ayuda/, (msg) => {
+  const chatId = msg.chat.id;
+  const helpText = '*ℹ️ Ayuda del Bot EntreHijos*\n\n' +
+    'Para reportar un enlace que no funciona, usa el comando:\n' +
+    '`/report <número>`\n\n' +
+    '*Ejemplo:*\n' +
+    'Si el enlace #5 no funciona, escribe:\n' +
+    '`/report 5`\n' +
+    'Esto notificará a los administradores para que lo revisen.';
+  bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/report (\d+)/, async (msg, match) => {
@@ -736,7 +749,6 @@ bot.onText(/\/restrict_link (\d+)/, async (msg, match) => {
   }
 });
 
-// Nuevos comandos añadidos
 bot.onText(/\/set_expiration (\d+) (\d+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const linkNumber = parseInt(match[1]);
