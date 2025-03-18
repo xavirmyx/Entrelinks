@@ -9,7 +9,7 @@ const bot = new TelegramBot(token);
 
 // Configuración del servidor Express
 const app = express();
-const port = process.env.PORT || 10000; // Puerto asignado por Render o Replit
+const port = process.env.PORT || 10000;
 const adminGroupChatId = process.env.GROUP_DESTINO || '-1002516061331';
 
 // Almacenamiento en memoria
@@ -48,6 +48,7 @@ app.get('/link/:id', (req, res) => {
   if (!views.some(v => v.userId === userId)) {
     views.push({ userId, action: 'accedió' });
     linkViews.set(link.number, views);
+    bot.sendMessage(adminGroupChatId, `🔗 Enlace #${link.number} (${link.display}) fue accedido por ID ${userId}`);
   }
 });
 
@@ -109,6 +110,8 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id.toString();
   if (chatId !== adminGroupChatId) return;
 
+  if (msg.text && msg.text.startsWith('/')) return; // Skip commands
+
   try {
     console.log(`📩 Mensaje recibido en ${chatId}:`, {
       text: msg.text,
@@ -119,10 +122,7 @@ bot.on('message', async (msg) => {
     });
 
     const urls = extractUrl(msg);
-    if (!urls) {
-      console.log('ℹ️ No se encontraron enlaces.');
-      return;
-    }
+    if (!urls) return;
 
     console.log(`🔗 Enlaces detectados: ${urls.join(', ')}`);
     let modifiedText = msg.text || msg.caption || '';
@@ -167,6 +167,8 @@ bot.on('message', async (msg) => {
   const username = msg.from.username ? `@${msg.from.username}` : `Usuario_${userId}`;
   const isForward = !!msg.forward_date;
 
+  if (msg.text && msg.text.startsWith('/')) return; // Skip commands
+
   try {
     const admins = await bot.getChatAdministrators(adminGroupChatId);
     if (admins.some(admin => admin.user.id === userId)) return;
@@ -189,6 +191,9 @@ bot.on('message', async (msg) => {
       userStat.count += 1;
       userStats.set(userId, userStat);
 
+      await bot.sendMessage(adminGroupChatId, 
+        `👤 ${username} ${action} el enlace #${linkNumber} (${link.display}) en el chat ${chatId}`);
+
       if (userStat.count > maxLinksBeforeAlert) {
         await bot.sendMessage(adminGroupChatId, 
           `⚠️ ${username} ha interactuado con más de ${maxLinksBeforeAlert} enlaces.`);
@@ -210,24 +215,23 @@ bot.onText(/\/menu/, async (msg) => {
 
     let menuText = '*📋 Menú del Bot EntreHijos*\n\n' +
       '*Comandos para Usuarios Normales*\n' +
-      '🚨 */report <número>* - Reportar enlaces que no funcionan\n' +
-      '📊 */my_stats* - Muestra tus estadísticas de interacciones\n' +
-      '🔗 */active_links* - Lista enlaces activos\n' +
-      'ℹ️ */link_info <número>* - Información de un enlace\n' +
-      '📋 */ayuda* - Lista de comandos para usuarios\n';
+      '🚨 */report <número>* - Reporta un enlace que no funciona\n' +
+      '📊 */my_stats* - Muestra tus interacciones con enlaces\n' +
+      'ℹ️ */link_info <número>* - Detalles de un enlace\n' +
+      '📋 */ayuda* - Lista de comandos disponibles\n';
 
     if (isAdmin && chatId === adminGroupChatId) {
       menuText += '\n*Comandos para Administradores*\n' +
-        '🔍 */visto <número>* - Muestra quién vio un enlace\n' +
-        '📈 */estadistica* - Estadísticas de interacciones\n' +
-        '🚦 */status* - Estado del bot\n' +
-        '🚫 */revoke <número>* - Revoca un enlace\n' +
-        '⚠️ */alert <número>* - Alerta sobre un enlace\n' +
+        '🔍 */visto <número>* - Muestra quién interactuó con un enlace\n' +
+        '📈 */estadistica* - Top 10 usuarios por interacciones\n' +
+        '🚦 */status* - Estado actual del bot\n' +
+        '🚫 */revoke <número>* - Revoca un enlace activo\n' +
+        '⚠️ */alert <número>* - Alerta sobre un enlace a admins\n' +
         '🔗 */list_links* - Lista todos los enlaces generados\n' +
-        '⏳ */extend_link <número> <horas>* - Extiende la expiración de un enlace\n' +
-        '📝 */generate_report* - Genera un reporte detallado\n' +
-        '🧹 */clear_stats* - Limpia estadísticas\n' +
-        '⚙️ */set_max_links <número>* - Establece el límite de enlaces antes de alerta';
+        '⏳ */extend_link <número> <horas>* - Extiende la duración de un enlace\n' +
+        '📝 */generate_report* - Reporte detallado de enlaces\n' +
+        '🧹 */clear_stats* - Borra estadísticas de usuarios\n' +
+        '⚙️ */set_max_links <número>* - Define límite de interacciones antes de alerta';
     }
 
     await bot.sendMessage(chatId, menuText, { parse_mode: 'Markdown' });
@@ -239,12 +243,11 @@ bot.onText(/\/menu/, async (msg) => {
 
 bot.onText(/\/ayuda/, (msg) => {
   const chatId = msg.chat.id;
-  const ayudaText = '📋 **Comandos para Usuarios Normales**\n\n' +
-    '🚨 **/report <número>** - Reportar enlaces que no funcionan\n' +
-    '📊 **/my_stats** - Muestra tus estadísticas de interacciones\n' +
-    '🔗 **/active_links** - Lista enlaces activos\n' +
-    'ℹ️ **/link_info <número>** - Información de un enlace\n' +
-    '📋 **/ayuda** - Lista de comandos para usuarios';
+  const ayudaText = '*📋 Ayuda - Comandos para Usuarios*\n\n' +
+    '🚨 */report <número>* - Reporta un enlace que no funciona\n' +
+    '📊 */my_stats* - Muestra tus interacciones con enlaces\n' +
+    'ℹ️ */link_info <número>* - Detalles de un enlace\n' +
+    '📋 */ayuda* - Muestra esta lista';
   bot.sendMessage(chatId, ayudaText, { parse_mode: 'Markdown' });
 });
 
@@ -265,18 +268,8 @@ bot.onText(/\/my_stats/, (msg) => {
   const userId = msg.from.id;
   const userStat = userStats.get(userId) || { username: msg.from.username || `Usuario_${userId}`, count: 0 };
   bot.sendMessage(chatId, 
-    `📊 **Tus Estadísticas**\nUsuario: ${userStat.username}\nInteracciones: ${userStat.count}`, 
+    `📊 *Tus Estadísticas*\nUsuario: ${userStat.username}\nInteracciones: ${userStat.count}`, 
     { parse_mode: 'Markdown' });
-});
-
-bot.onText(/\/active_links/, (msg) => {
-  const chatId = msg.chat.id;
-  const activeLinks = links.filter(l => Date.now() <= l.expirationTime);
-  if (activeLinks.length === 0) {
-    return bot.sendMessage(chatId, 'ℹ️ No hay enlaces activos.');
-  }
-  const linkList = activeLinks.map(l => `#${l.number}: ${l.display}`).join('\n');
-  bot.sendMessage(chatId, `🔗 **Enlaces Activos**\n${linkList}`, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/link_info (\d+)/, (msg, match) => {
@@ -288,7 +281,7 @@ bot.onText(/\/link_info (\d+)/, (msg, match) => {
   }
   const expires = new Date(link.expirationTime).toLocaleString();
   bot.sendMessage(chatId, 
-    `ℹ️ **Información del Enlace #${linkNumber}**\n` +
+    `*ℹ️ Información del Enlace #${linkNumber}*\n` +
     `URL Mostrada: ${link.display}\n` +
     `URL Original: ${link.original}\n` +
     `Expira: ${expires}`, 
@@ -314,7 +307,7 @@ bot.onText(/\/visto (\d+)/, async (msg, match) => {
       return bot.sendMessage(chatId, 'ℹ️ Sin interacciones.');
     }
     const viewList = views.map(v => `${v.username} ${v.action}`).join('\n');
-    await bot.sendMessage(chatId, `**Interacciones del enlace #${linkNumber}**\n${viewList}`, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, `*Interacciones del enlace #${linkNumber}*\n${viewList}`, { parse_mode: 'Markdown' });
   } catch (error) {
     console.error('❌ Error en /visto:', error.message);
     await bot.sendMessage(chatId, '⚠️ Error al procesar /visto.');
@@ -338,7 +331,7 @@ bot.onText(/\/estadistica/, async (msg) => {
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
     const statsText = sortedStats.map((stat, i) => `${i + 1}. ${stat.username} - ${stat.count} interacciones`).join('\n');
-    await bot.sendMessage(chatId, `**Estadísticas Top 10**\n${statsText}`, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, `*Estadísticas Top 10*\n${statsText}`, { parse_mode: 'Markdown' });
   } catch (error) {
     console.error('❌ Error en /estadistica:', error.message);
     await bot.sendMessage(chatId, '⚠️ Error al procesar /estadistica.');
@@ -354,7 +347,7 @@ bot.onText(/\/status/, async (msg) => {
     if (!admins.some(admin => admin.user.id === userId)) {
       return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
     }
-    const statusText = `**Estado del Bot EntreHijos**\n` +
+    const statusText = `*Estado del Bot EntreHijos*\n` +
       `Enlaces generados: ${links.length}\n` +
       `Usuarios activos: ${userStats.size}\n` +
       `Bot operativo en puerto: ${port}`;
@@ -401,7 +394,7 @@ bot.onText(/\/alert (\d+)/, async (msg, match) => {
     if (!link) {
       return bot.sendMessage(chatId, '⚠️ Enlace no encontrado.');
     }
-    const alertMessage = `⚠️ **Alerta**: Posible uso indebido del enlace #${linkNumber}.`;
+    const alertMessage = `*⚠️ Alerta*: Posible uso indebido del enlace #${linkNumber} (${link.display}).`;
     await bot.sendMessage(chatId, alertMessage, { parse_mode: 'Markdown' });
     for (const admin of admins) {
       await bot.sendMessage(admin.user.id, alertMessage, { parse_mode: 'Markdown' });
@@ -428,7 +421,7 @@ bot.onText(/\/list_links/, async (msg) => {
     const linkList = links.map(l => 
       `#${l.number}: ${l.display} (Expira: ${new Date(l.expirationTime).toLocaleString()})`
     ).join('\n');
-    await bot.sendMessage(chatId, `🔗 **Lista de Enlaces**\n${linkList}`, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, `*🔗 Lista de Enlaces*\n${linkList}`, { parse_mode: 'Markdown' });
   } catch (error) {
     console.error('❌ Error en /list_links:', error.message);
     await bot.sendMessage(chatId, '⚠️ Error al procesar /list_links.');
@@ -475,7 +468,7 @@ bot.onText(/\/generate_report/, async (msg) => {
       const views = linkViews.get(l.number) || [];
       return `#${l.number}: ${l.display} - ${views.length} interacciones`;
     }).join('\n');
-    await bot.sendMessage(chatId, `📝 **Reporte Detallado**\n${report}`, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, `*📝 Reporte Detallado*\n${report}`, { parse_mode: 'Markdown' });
   } catch (error) {
     console.error('❌ Error en /generate_report:', error.message);
     await bot.sendMessage(chatId, '⚠️ Error al procesar /generate_report.');
