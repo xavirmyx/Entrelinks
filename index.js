@@ -28,7 +28,7 @@ app.post(`/bot${token}`, (req, res) => {
 });
 
 // Ruta para redirección de enlaces únicos
-app.get('/link/:id', (req, res) => {
+app.get('/link/:id', async (req, res) => {
   const linkId = req.params.id;
   const userId = req.query.user_id;
   const link = links.find(l => l.uniqueId === linkId);
@@ -43,12 +43,28 @@ app.get('/link/:id', (req, res) => {
   console.log(`🔗 Redirigiendo enlace único ${linkId} a ${link.original}`);
   res.redirect(link.original);
 
+  // Obtener información del usuario desde Telegram
+  let username = `Usuario_${userId}`;
+  try {
+    const user = await bot.getChat(userId);
+    username = user.username ? `@${user.username}` : `${user.first_name || ''} ${user.last_name || ''}`.trim() || `Usuario_${userId}`;
+  } catch (error) {
+    console.error(`❌ Error al obtener info de usuario ${userId}: ${error.message}`);
+  }
+
+  // Registrar la vista con más detalles
   if (!linkViews.has(link.number)) linkViews.set(link.number, []);
   const views = linkViews.get(link.number);
   if (!views.some(v => v.userId === userId)) {
-    views.push({ userId, action: 'accedió' });
+    views.push({
+      userId,
+      username,
+      timestamp: Date.now(),
+      chatId: null, // No se conoce el chatId aquí, se usará 'Desconocido'
+      action: 'accedió',
+    });
     linkViews.set(link.number, views);
-    bot.sendMessage(adminGroupChatId, `🔗 Enlace #${link.number} (${link.display}) fue accedido por ID ${userId}`);
+    console.log(`👤 ${username} (${userId}) accedió al enlace #${link.number}`);
   }
 });
 
@@ -184,15 +200,18 @@ bot.on('message', async (msg) => {
     if (!linkViews.has(linkNumber)) linkViews.set(linkNumber, []);
     const views = linkViews.get(linkNumber);
     if (!views.some(v => v.userId === userId)) {
-      views.push({ userId, username, chatId, action });
+      views.push({
+        userId,
+        username,
+        timestamp: Date.now(),
+        chatId,
+        action,
+      });
       linkViews.set(linkNumber, views);
 
       const userStat = userStats.get(userId) || { username, count: 0 };
       userStat.count += 1;
       userStats.set(userId, userStat);
-
-      await bot.sendMessage(adminGroupChatId, 
-        `👤 ${username} ${action} el enlace #${linkNumber} (${link.display}) en el chat ${chatId}`);
 
       if (userStat.count > maxLinksBeforeAlert) {
         await bot.sendMessage(adminGroupChatId, 
@@ -218,7 +237,8 @@ bot.onText(/\/menu/, async (msg) => {
       '🚨 */report <número>* - Reporta un enlace que no funciona\n' +
       '📊 */my_stats* - Muestra tus interacciones con enlaces\n' +
       'ℹ️ */link_info <número>* - Detalles de un enlace\n' +
-      '📋 */ayuda* - Lista de comandos disponibles\n';
+      '📋 */ayuda* - Lista de comandos disponibles\n' +
+      '🏓 */ping* - Comprueba si el bot está en línea\n';
 
     if (isAdmin && chatId === adminGroupChatId) {
       menuText += '\n*Comandos para Administradores*\n' +
@@ -231,7 +251,11 @@ bot.onText(/\/menu/, async (msg) => {
         '⏳ */extend_link <número> <horas>* - Extiende la duración de un enlace\n' +
         '📝 */generate_report* - Reporte detallado de enlaces\n' +
         '🧹 */clear_stats* - Borra estadísticas de usuarios\n' +
-        '⚙️ */set_max_links <número>* - Define límite de interacciones antes de alerta';
+        '⚙️ */set_max_links <número>* - Define límite de interacciones antes de alerta\n' +
+        '👀 */total_views* - Total de vistas de todos los enlaces\n' +
+        '🔝 */top_links* - Top 5 enlaces más visitados\n' +
+        '📜 */link_history <ID>* - Historial de enlaces de un usuario\n' +
+        '⏰ */expire_soon* - Enlaces que expiran en 24 horas';
     }
 
     await bot.sendMessage(chatId, menuText, { parse_mode: 'Markdown' });
@@ -247,7 +271,8 @@ bot.onText(/\/ayuda/, (msg) => {
     '🚨 */report <número>* - Reporta un enlace que no funciona\n' +
     '📊 */my_stats* - Muestra tus interacciones con enlaces\n' +
     'ℹ️ */link_info <número>* - Detalles de un enlace\n' +
-    '📋 */ayuda* - Muestra esta lista';
+    '📋 */ayuda* - Muestra esta lista\n' +
+    '🏓 */ping* - Comprueba si el bot está en línea';
   bot.sendMessage(chatId, ayudaText, { parse_mode: 'Markdown' });
 });
 
@@ -306,8 +331,16 @@ bot.onText(/\/visto (\d+)/, async (msg, match) => {
     if (views.length === 0) {
       return bot.sendMessage(chatId, 'ℹ️ Sin interacciones.');
     }
-    const viewList = views.map(v => `${v.username} ${v.action}`).join('\n');
-    await bot.sendMessage(chatId, `*Interacciones del enlace #${linkNumber}*\n${viewList}`, { parse_mode: 'Markdown' });
+
+    const viewList = views.map((v, index) => {
+      const date = new Date(v.timestamp).toLocaleString();
+      return `${index + 1}. ${v.username} (${v.userId}) - Enlace #${linkNumber} - ${date} - Grupo: ${v.chatId || 'Desconocido'}`;
+    }).join('\n');
+
+    await bot.sendMessage(chatId, 
+      `*Interacciones del enlace #${linkNumber}*\n${viewList}`, 
+      { parse_mode: 'Markdown' }
+    );
   } catch (error) {
     console.error('❌ Error en /visto:', error.message);
     await bot.sendMessage(chatId, '⚠️ Error al procesar /visto.');
@@ -508,6 +541,109 @@ bot.onText(/\/set_max_links (\d+)/, async (msg, match) => {
   } catch (error) {
     console.error('❌ Error en /set_max_links:', error.message);
     await bot.sendMessage(chatId, '⚠️ Error al procesar /set_max_links.');
+  }
+});
+
+// Nuevos comandos
+bot.onText(/\/total_views/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    const totalViews = Array.from(linkViews.values()).reduce((sum, views) => sum + views.length, 0);
+    await bot.sendMessage(chatId, 
+      `*📊 Total de Interacciones*\nVistas totales: ${totalViews}`, 
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error) {
+    console.error('❌ Error en /total_views:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /total_views.');
+  }
+});
+
+bot.onText(/\/ping/, (msg) => {
+  const chatId = msg.chat.id;
+  bot.sendMessage(chatId, '🏓 ¡Pong! El bot está en línea.');
+});
+
+bot.onText(/\/top_links/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    const topLinks = links
+      .map(l => ({ number: l.number, display: l.display, views: (linkViews.get(l.number) || []).length }))
+      .sort((a, b) => b.views - a.views)
+      .slice(0, 5);
+    if (topLinks.length === 0) {
+      return bot.sendMessage(chatId, 'ℹ️ No hay enlaces con interacciones.');
+    }
+    const topList = topLinks.map((l, i) => `${i + 1}. #${l.number} (${l.display}) - ${l.views} vistas`).join('\n');
+    await bot.sendMessage(chatId, `*🔝 Top 5 Enlaces Más Visitados*\n${topList}`, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('❌ Error en /top_links:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /top_links.');
+  }
+});
+
+bot.onText(/\/link_history (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const targetUserId = parseInt(match[1]);
+
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    const userViews = Array.from(linkViews.entries())
+      .flatMap(([linkNumber, views]) => 
+        views.filter(v => v.userId === targetUserId).map(v => ({ linkNumber, ...v }))
+      );
+    if (userViews.length === 0) {
+      return bot.sendMessage(chatId, 'ℹ️ Este usuario no ha interactuado con ningún enlace.');
+    }
+    const history = userViews.map((v, i) => 
+      `${i + 1}. ${v.username} - Enlace #${v.linkNumber} - ${new Date(v.timestamp).toLocaleString()}`
+    ).join('\n');
+    await bot.sendMessage(chatId, `*📜 Historial de ${userViews[0].username}*\n${history}`, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('❌ Error en /link_history:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /link_history.');
+  }
+});
+
+bot.onText(/\/expire_soon/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    const soonExpiring = links.filter(l => {
+      const timeLeft = l.expirationTime - Date.now();
+      return timeLeft > 0 && timeLeft <= 24 * 60 * 60 * 1000;
+    });
+    if (soonExpiring.length === 0) {
+      return bot.sendMessage(chatId, 'ℹ️ No hay enlaces que expiren pronto.');
+    }
+    const list = soonExpiring.map(l => 
+      `#${l.number}: ${l.display} (Expira: ${new Date(l.expirationTime).toLocaleString()})`
+    ).join('\n');
+    await bot.sendMessage(chatId, `*⏰ Enlaces por Expirar (24h)*\n${list}`, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('❌ Error en /expire_soon:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /expire_soon.');
   }
 });
 
