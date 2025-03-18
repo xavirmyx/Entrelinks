@@ -16,6 +16,7 @@ const adminGroupChatId = process.env.GROUP_DESTINO || '-1002516061331';
 let links = [];
 let linkViews = new Map();
 let userStats = new Map();
+let blockedUsers = new Set();
 let maxLinksBeforeAlert = process.env.MAX_LINKS_BEFORE_ALERT || 10;
 
 // Middleware para parsear JSON
@@ -31,6 +32,11 @@ app.post(`/bot${token}`, (req, res) => {
 app.get('/link/:id', async (req, res) => {
   const linkId = req.params.id;
   const userId = req.query.user_id;
+  const userIp = req.ip || req.headers['x-forwarded-for'] || 'Desconocida';
+  if (blockedUsers.has(parseInt(userId))) {
+    console.log(`❌ Acceso denegado para usuario bloqueado ${userId} al enlace ${linkId}`);
+    return res.status(403).send('🚫 Acceso denegado: Estás bloqueado.');
+  }
   const link = links.find(l => l.uniqueId === linkId);
   if (!link) {
     console.log(`❌ Enlace único ${linkId} no encontrado`);
@@ -40,10 +46,19 @@ app.get('/link/:id', async (req, res) => {
     console.log(`❌ Enlace único ${linkId} ha expirado`);
     return res.status(410).send('⚠️ Enlace ha expirado');
   }
+  const views = linkViews.get(link.number) || [];
+  if (link.restricted && views.some(v => v.userId === userId)) {
+    console.log(`❌ Enlace #${link.number} restringido, usuario ${userId} ya lo usó`);
+    return res.status(403).send('🚫 Este enlace solo puede usarse una vez por usuario.');
+  }
+  if (link.maxViews && views.length >= link.maxViews) {
+    console.log(`❌ Enlace #${link.number} alcanzó límite de ${link.maxViews} vistas`);
+    links = links.filter(l => l.uniqueId !== linkId); // Revocar enlace
+    return res.status(410).send('⚠️ Enlace revocado por límite de vistas.');
+  }
   console.log(`🔗 Redirigiendo enlace único ${linkId} a ${link.original}`);
   res.redirect(link.original);
 
-  // Obtener información del usuario desde Telegram
   let username = `Usuario_${userId}`;
   try {
     const user = await bot.getChat(userId);
@@ -52,19 +67,19 @@ app.get('/link/:id', async (req, res) => {
     console.error(`❌ Error al obtener info de usuario ${userId}: ${error.message}`);
   }
 
-  // Registrar la vista con más detalles
   if (!linkViews.has(link.number)) linkViews.set(link.number, []);
-  const views = linkViews.get(link.number);
-  if (!views.some(v => v.userId === userId)) {
-    views.push({
+  const updatedViews = linkViews.get(link.number);
+  if (!updatedViews.some(v => v.userId === userId && v.userIp === userIp)) {
+    updatedViews.push({
       userId,
       username,
       timestamp: Date.now(),
-      chatId: null, // No se conoce el chatId aquí, se usará 'Desconocido'
+      chatId: null,
       action: 'accedió',
+      userIp,
     });
-    linkViews.set(link.number, views);
-    console.log(`👤 ${username} (${userId}) accedió al enlace #${link.number}`);
+    linkViews.set(link.number, updatedViews);
+    console.log(`👤 ${username} (${userId}) accedió al enlace #${link.number} desde IP ${userIp}`);
   }
 });
 
@@ -111,13 +126,15 @@ function extractUrl(message) {
 
 function generateUniqueLink(originalUrl, linkNumber) {
   const uniqueId = generateUniqueId();
-  const expirationTime = Date.now() + 24 * 60 * 60 * 1000; // 24 horas
+  const expirationTime = Date.now() + 24 * 60 * 60 * 1000;
   const baseUrl = process.env.WEBHOOK_URL || 'https://entrelinks.onrender.com';
   return {
     uniqueId,
     uniqueUrl: `${baseUrl}/link/${uniqueId}`,
     displayUrl: `https://entreshijoslink-${linkNumber}`,
     expirationTime,
+    restricted: false,
+    maxViews: null,
   };
 }
 
@@ -126,7 +143,7 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id.toString();
   if (chatId !== adminGroupChatId) return;
 
-  if (msg.text && msg.text.startsWith('/')) return; // Skip commands
+  if (msg.text && msg.text.startsWith('/')) return;
 
   try {
     console.log(`📩 Mensaje recibido en ${chatId}:`, {
@@ -183,7 +200,7 @@ bot.on('message', async (msg) => {
   const username = msg.from.username ? `@${msg.from.username}` : `Usuario_${userId}`;
   const isForward = !!msg.forward_date;
 
-  if (msg.text && msg.text.startsWith('/')) return; // Skip commands
+  if (msg.text && msg.text.startsWith('/')) return;
 
   try {
     const admins = await bot.getChatAdministrators(adminGroupChatId);
@@ -233,12 +250,8 @@ bot.onText(/\/menu/, async (msg) => {
     const isAdmin = admins.some(admin => admin.user.id === userId);
 
     let menuText = '*📋 Menú del Bot EntreHijos*\n\n' +
-      '*Comandos para Usuarios Normales*\n' +
-      '🚨 */report <número>* - Reporta un enlace que no funciona\n' +
-      '📊 */my_stats* - Muestra tus interacciones con enlaces\n' +
-      'ℹ️ */link_info <número>* - Detalles de un enlace\n' +
-      '📋 */ayuda* - Lista de comandos disponibles\n' +
-      '🏓 */ping* - Comprueba si el bot está en línea\n';
+      '*Comando para Todos*\n' +
+      '🚨 */report <número>* - Reporta un enlace que no funciona\n';
 
     if (isAdmin && chatId === adminGroupChatId) {
       menuText += '\n*Comandos para Administradores*\n' +
@@ -255,25 +268,28 @@ bot.onText(/\/menu/, async (msg) => {
         '👀 */total_views* - Total de vistas de todos los enlaces\n' +
         '🔝 */top_links* - Top 5 enlaces más visitados\n' +
         '📜 */link_history <ID>* - Historial de enlaces de un usuario\n' +
-        '⏰ */expire_soon* - Enlaces que expiran en 24 horas';
+        '⏰ */expire_soon* - Enlaces que expiran en 24 horas\n' +
+        '🚫 */block_user <ID>* - Bloquea a un usuario\n' +
+        '✅ */unblock_user <ID>* - Desbloquea a un usuario\n' +
+        '🌐 */check_ip <número>* - IPs que accedieron a un enlace\n' +
+        '🔒 */restrict_link <número>* - Limita un enlace a un uso por usuario\n' +
+        '⏰ */set_expiration <número> <horas>* - Establece nueva duración de un enlace\n' +
+        '📊 */link_usage <número>* - Estadísticas detalladas de un enlace\n' +
+        '🚫 */auto_revoke <número> <vistas>* - Revoca tras X vistas';
     }
 
-    await bot.sendMessage(chatId, menuText, { parse_mode: 'Markdown' });
+    if (menuText.length > 4096) {
+      const parts = menuText.match(/(.|[\r\n]){1,4096}/g);
+      for (const part of parts) {
+        await bot.sendMessage(chatId, part, { parse_mode: 'Markdown' });
+      }
+    } else {
+      await bot.sendMessage(chatId, menuText, { parse_mode: 'Markdown' });
+    }
   } catch (error) {
     console.error('❌ Error en /menu:', error.message);
     await bot.sendMessage(chatId, '⚠️ Error al mostrar el menú.');
   }
-});
-
-bot.onText(/\/ayuda/, (msg) => {
-  const chatId = msg.chat.id;
-  const ayudaText = '*📋 Ayuda - Comandos para Usuarios*\n\n' +
-    '🚨 */report <número>* - Reporta un enlace que no funciona\n' +
-    '📊 */my_stats* - Muestra tus interacciones con enlaces\n' +
-    'ℹ️ */link_info <número>* - Detalles de un enlace\n' +
-    '📋 */ayuda* - Muestra esta lista\n' +
-    '🏓 */ping* - Comprueba si el bot está en línea';
-  bot.sendMessage(chatId, ayudaText, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/report (\d+)/, async (msg, match) => {
@@ -286,31 +302,6 @@ bot.onText(/\/report (\d+)/, async (msg, match) => {
   await bot.sendMessage(adminGroupChatId, 
     `🚨 Reporte: El enlace #${linkNumber} (${link.display}) fue reportado como no funcional por @${msg.from.username || 'Usuario_' + msg.from.id}`);
   bot.sendMessage(chatId, '✅ Reporte enviado a los administradores.');
-});
-
-bot.onText(/\/my_stats/, (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const userStat = userStats.get(userId) || { username: msg.from.username || `Usuario_${userId}`, count: 0 };
-  bot.sendMessage(chatId, 
-    `📊 *Tus Estadísticas*\nUsuario: ${userStat.username}\nInteracciones: ${userStat.count}`, 
-    { parse_mode: 'Markdown' });
-});
-
-bot.onText(/\/link_info (\d+)/, (msg, match) => {
-  const chatId = msg.chat.id;
-  const linkNumber = parseInt(match[1]);
-  const link = links.find(l => l.number === linkNumber);
-  if (!link) {
-    return bot.sendMessage(chatId, '⚠️ Enlace no encontrado.');
-  }
-  const expires = new Date(link.expirationTime).toLocaleString();
-  bot.sendMessage(chatId, 
-    `*ℹ️ Información del Enlace #${linkNumber}*\n` +
-    `URL Mostrada: ${link.display}\n` +
-    `URL Original: ${link.original}\n` +
-    `Expira: ${expires}`, 
-    { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/visto (\d+)/, async (msg, match) => {
@@ -544,7 +535,6 @@ bot.onText(/\/set_max_links (\d+)/, async (msg, match) => {
   }
 });
 
-// Nuevos comandos
 bot.onText(/\/total_views/, async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
@@ -565,9 +555,19 @@ bot.onText(/\/total_views/, async (msg) => {
   }
 });
 
-bot.onText(/\/ping/, (msg) => {
+bot.onText(/\/ping/, async (msg) => {
   const chatId = msg.chat.id;
-  bot.sendMessage(chatId, '🏓 ¡Pong! El bot está en línea.');
+  const userId = msg.from.id;
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    bot.sendMessage(chatId, '🏓 ¡Pong! El bot está en línea.');
+  } catch (error) {
+    console.error('❌ Error en /ping:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /ping.');
+  }
 });
 
 bot.onText(/\/top_links/, async (msg) => {
@@ -644,6 +644,175 @@ bot.onText(/\/expire_soon/, async (msg) => {
   } catch (error) {
     console.error('❌ Error en /expire_soon:', error.message);
     await bot.sendMessage(chatId, '⚠️ Error al procesar /expire_soon.');
+  }
+});
+
+bot.onText(/\/block_user (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const targetUserId = parseInt(match[1]);
+
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    blockedUsers.add(targetUserId);
+    await bot.sendMessage(chatId, `✅ Usuario ${targetUserId} bloqueado. No podrá acceder a los enlaces.`);
+  } catch (error) {
+    console.error('❌ Error en /block_user:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /block_user.');
+  }
+});
+
+bot.onText(/\/unblock_user (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const targetUserId = parseInt(match[1]);
+
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    if (blockedUsers.delete(targetUserId)) {
+      await bot.sendMessage(chatId, `✅ Usuario ${targetUserId} desbloqueado.`);
+    } else {
+      await bot.sendMessage(chatId, `ℹ️ El usuario ${targetUserId} no estaba bloqueado.`);
+    }
+  } catch (error) {
+    console.error('❌ Error en /unblock_user:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /unblock_user.');
+  }
+});
+
+bot.onText(/\/check_ip (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const linkNumber = parseInt(match[1]);
+  const userId = msg.from.id;
+
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    const link = links.find(l => l.number === linkNumber);
+    if (!link) {
+      return bot.sendMessage(chatId, '⚠️ Enlace no encontrado.');
+    }
+    const views = linkViews.get(linkNumber) || [];
+    if (views.length === 0) {
+      return bot.sendMessage(chatId, 'ℹ️ Sin interacciones.');
+    }
+    const ipList = views.map((v, i) => 
+      `${i + 1}. ${v.username} (${v.userId}) - IP: ${v.userIp || 'Desconocida'} - ${new Date(v.timestamp).toLocaleString()}`
+    ).join('\n');
+    await bot.sendMessage(chatId, `*🌐 IPs del Enlace #${linkNumber}*\n${ipList}`, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('❌ Error en /check_ip:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /check_ip.');
+  }
+});
+
+bot.onText(/\/restrict_link (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const linkNumber = parseInt(match[1]);
+  const userId = msg.from.id;
+
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    const link = links.find(l => l.number === linkNumber);
+    if (!link) {
+      return bot.sendMessage(chatId, '⚠️ Enlace no encontrado.');
+    }
+    link.restricted = true;
+    await bot.sendMessage(chatId, `🔒 Enlace #${linkNumber} restringido a un uso por usuario.`);
+  } catch (error) {
+    console.error('❌ Error en /restrict_link:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /restrict_link.');
+  }
+});
+
+// Nuevos comandos añadidos
+bot.onText(/\/set_expiration (\d+) (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const linkNumber = parseInt(match[1]);
+  const hours = parseInt(match[2]);
+  const userId = msg.from.id;
+
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    const link = links.find(l => l.number === linkNumber);
+    if (!link) {
+      return bot.sendMessage(chatId, '⚠️ Enlace no encontrado.');
+    }
+    link.expirationTime = Date.now() + hours * 60 * 60 * 1000;
+    await bot.sendMessage(chatId, 
+      `⏰ Enlace #${linkNumber} ahora expira en ${hours} horas: ${new Date(link.expirationTime).toLocaleString()}`);
+  } catch (error) {
+    console.error('❌ Error en /set_expiration:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /set_expiration.');
+  }
+});
+
+bot.onText(/\/link_usage (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const linkNumber = parseInt(match[1]);
+  const userId = msg.from.id;
+
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    const link = links.find(l => l.number === linkNumber);
+    if (!link) {
+      return bot.sendMessage(chatId, '⚠️ Enlace no encontrado.');
+    }
+    const views = linkViews.get(linkNumber) || [];
+    const accessed = views.filter(v => v.action === 'accedió').length;
+    const forwarded = views.filter(v => v.action === 'reenvió').length;
+    const copied = views.filter(v => v.action === 'vio/copió').length;
+    const usageText = `*📊 Uso del Enlace #${linkNumber}*\n` +
+      `Total de interacciones: ${views.length}\n` +
+      `Accesos directos: ${accessed}\n` +
+      `Reenvíos: ${forwarded}\n` +
+      `Vistos/Copiados: ${copied}\n` +
+      `Expira: ${new Date(link.expirationTime).toLocaleString()}`;
+    await bot.sendMessage(chatId, usageText, { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error('❌ Error en /link_usage:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /link_usage.');
+  }
+});
+
+bot.onText(/\/auto_revoke (\d+) (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const linkNumber = parseInt(match[1]);
+  const maxViews = parseInt(match[2]);
+  const userId = msg.from.id;
+
+  try {
+    const admins = await bot.getChatAdministrators(adminGroupChatId);
+    if (!admins.some(admin => admin.user.id === userId)) {
+      return bot.sendMessage(chatId, '🚫 Solo admins pueden usar este comando.');
+    }
+    const link = links.find(l => l.number === linkNumber);
+    if (!link) {
+      return bot.sendMessage(chatId, '⚠️ Enlace no encontrado.');
+    }
+    link.maxViews = maxViews;
+    await bot.sendMessage(chatId, 
+      `🚫 Enlace #${linkNumber} se revocará automáticamente tras ${maxViews} vistas.`);
+  } catch (error) {
+    console.error('❌ Error en /auto_revoke:', error.message);
+    await bot.sendMessage(chatId, '⚠️ Error al procesar /auto_revoke.');
   }
 });
 
