@@ -1,7 +1,9 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const axios = require('axios');
-const cheerio = require('cheerio');
+const ffmpeg = require('fluent-ffmpeg');
+const fs = require('fs');
+const path = require('path');
 
 // Token del bot
 const token = '7861676131:AAFLv4dBIFiHV1OYc8BJH2U8kWPal7lpBMQ';
@@ -11,8 +13,8 @@ const bot = new TelegramBot(token);
 const app = express();
 const port = process.env.PORT || 10000;
 
-// URL de la página de canales
-const CHANNELS_URL = 'https://photocalltv.es/';
+// URL inicial de la lista IPTV M3U
+let iptvUrl = 'https://coco3.jimaplus.xyz:8080/get.php?username=4679659584&password=4469385344&type=m3u_plus';
 
 // Middleware para parsear JSON
 app.use(express.json());
@@ -33,95 +35,95 @@ app.listen(port, () => {
     .catch(err => console.error(`❌ Error al configurar webhook: ${err.message}`));
 });
 
-// Función para extraer canales de la página
+// Función para extraer canales de la lista M3U
 async function fetchChannels() {
   try {
-    const { data } = await axios.get(CHANNELS_URL, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-      },
-      timeout: 10000,
-    });
-    const $ = cheerio.load(data);
-    const channels = {
-      nacionales: [],
-      internacionales: [],
-      deportes: [],
-      radio: [],
-    };
+    const { data } = await axios.get(iptvUrl, { timeout: 10000 });
+    const lines = data.split('\n');
+    const channels = {};
 
-    // Extraer canales nacionales (ejemplo: sección "Nacionales")
-    $('div#nacionales .channel').each((i, element) => {
-      const name = $(element).find('img').attr('alt') || 'Canal desconocido';
-      const link = $(element).find('a').attr('href');
-      if (name && link) {
-        channels.nacionales.push({ name, link: link.startsWith('http') ? link : `https://photocalltv.es${link}` });
+    let currentChannel = null;
+    for (const line of lines) {
+      if (line.startsWith('#EXTINF')) {
+        const titleMatch = line.match(/group-title="([^"]+)".*?,(.+)/);
+        if (titleMatch) {
+          const category = titleMatch[1] || 'Sin categoría';
+          const name = titleMatch[2].trim();
+          currentChannel = { name, category };
+          if (!channels[category]) channels[category] = [];
+        }
+      } else if (line.startsWith('http') && currentChannel) {
+        currentChannel.link = line.trim();
+        channels[currentChannel.category].push(currentChannel);
+        currentChannel = null;
       }
-    });
+    }
 
-    // Extraer canales internacionales (ejemplo: sección "Internacionales")
-    $('div#internacionales .channel').each((i, element) => {
-      const name = $(element).find('img').attr('alt') || 'Canal desconocido';
-      const link = $(element).find('a').attr('href');
-      if (name && link) {
-        channels.internacionales.push({ name, link: link.startsWith('http') ? link : `https://photocalltv.es${link}` });
-      }
-    });
-
-    // Extraer canales de deportes (ejemplo: sección "Deportes")
-    $('div#deportes .channel').each((i, element) => {
-      const name = $(element).find('img').attr('alt') || 'Canal desconocido';
-      const link = $(element).find('a').attr('href');
-      if (name && link) {
-        channels.deportes.push({ name, link: link.startsWith('http') ? link : `https://photocalltv.es${link}` });
-      }
-    });
-
-    // Extraer emisoras de radio (ejemplo: sección "Radio")
-    $('div#radio .channel').each((i, element) => {
-      const name = $(element).find('img').attr('alt') || 'Radio desconocida';
-      const link = $(element).find('a').attr('href');
-      if (name && link) {
-        channels.radio.push({ name, link: link.startsWith('http') ? link : `https://photocalltv.es${link}` });
-      }
-    });
-
-    console.log(`✅ Canales extraídos - Nacionales: ${channels.nacionales.length}, Internacionales: ${channels.internacionales.length}, Deportes: ${channels.deportes.length}, Radio: ${channels.radio.length}`);
+    console.log(`✅ Canales extraídos: ${Object.keys(channels).length} categorías`);
     return channels;
   } catch (error) {
-    console.error(`❌ Error al extraer canales: ${error.message}`);
-    return { nacionales: [], internacionales: [], deportes: [], radio: [] };
+    console.error(`❌ Error al extraer canales de IPTV: ${error.message}`);
+    return {};
   }
+}
+
+// Función para generar un fragmento MP4 del stream
+async function generateVideoFragment(streamUrl, chatId) {
+  const outputPath = path.join(__dirname, `temp_${Date.now()}.mp4`);
+
+  return new Promise((resolve, reject) => {
+    ffmpeg(streamUrl)
+      .output(outputPath)
+      .format('mp4')
+      .videoCodec('libx264')
+      .audioCodec('aac')
+      .duration(10) // Fragmento de 10 segundos
+      .on('end', () => {
+        console.log(`✅ Fragmento generado: ${outputPath}`);
+        resolve(outputPath);
+      })
+      .on('error', (err) => {
+        console.error(`❌ Error al generar fragmento: ${err.message}`);
+        reject(err);
+      })
+      .run();
+  });
 }
 
 // Menú principal
 async function sendMainMenu(chatId) {
   console.log(`📤 Enviando menú principal a ${chatId}`);
+  const channels = await fetchChannels();
+  const categories = Object.keys(channels);
+
+  if (categories.length === 0) {
+    await bot.sendMessage(chatId, '⚠️ No se pudieron cargar los canales. Verifica la URL IPTV.');
+    return;
+  }
+
+  const keyboard = categories.slice(0, 10).map(category => [
+    { text: category, callback_data: `category_${category}` },
+  ]);
+
   const options = {
     reply_markup: {
-      inline_keyboard: [
-        [{ text: '📺 Nacionales (España)', callback_data: 'nacionales' }],
-        [{ text: '🌍 Internacionales', callback_data: 'internacionales' }],
-        [{ text: '⚽ Deportes', callback_data: 'deportes' }],
-        [{ text: '📻 Radio', callback_data: 'radio' }],
-      ],
+      inline_keyboard: [...keyboard, [{ text: 'ℹ️ Ayuda', callback_data: 'help' }]],
     },
   };
-  await bot.sendMessage(chatId, '📺 Bienvenido al Bot de TV en Vivo\nSelecciona una categoría:', options);
+  await bot.sendMessage(chatId, '📺 Bienvenido al Bot IPTV\nSelecciona una categoría:', options);
 }
 
 // Mostrar lista de canales
 async function sendChannelList(chatId, category) {
   const channels = await fetchChannels();
-  const channelList = channels[category];
+  const channelList = channels[category] || [];
 
   if (channelList.length === 0) {
-    await bot.sendMessage(chatId, `⚠️ No hay canales disponibles en ${category}.`);
+    await bot.sendMessage(chatId, `⚠️ No hay canales en ${category}.`);
     return;
   }
 
-  const keyboard = channelList.map((channel, index) => [
+  const keyboard = channelList.slice(0, 20).map((channel, index) => [
     { text: channel.name, callback_data: `channel_${category}_${index}` },
   ]);
 
@@ -130,7 +132,7 @@ async function sendChannelList(chatId, category) {
       inline_keyboard: keyboard,
     },
   };
-  await bot.sendMessage(chatId, `📺 Canales en ${category.charAt(0).toUpperCase() + category.slice(1)}:`, options);
+  await bot.sendMessage(chatId, `📺 Canales en ${category}:`, options);
 
   // Almacenar canales temporalmente
   bot.tempChannels = channels;
@@ -150,11 +152,21 @@ bot.onText(/\/menu/, (msg) => {
   sendMainMenu(chatId);
 });
 
-// Comando /test (para depuración)
+// Comando /test
 bot.onText(/\/test/, (msg) => {
   const chatId = msg.chat.id;
   console.log(`📩 Comando /test recibido de ${chatId}`);
   bot.sendMessage(chatId, '✅ ¡El bot está vivo!');
+});
+
+// Comando /setiptv para cambiar la URL
+bot.onText(/\/setiptv (.+)/, (msg, match) => {
+  const chatId = msg.chat.id;
+  const newUrl = match[1];
+  console.log(`📩 Comando /setiptv recibido de ${chatId}: ${newUrl}`);
+
+  iptvUrl = newUrl;
+  bot.sendMessage(chatId, `✅ Lista IPTV actualizada a: ${newUrl}\nUsa /menu para ver los canales.`);
 });
 
 // Manejar callbacks de los botones
@@ -165,27 +177,40 @@ bot.on('callback_query', async (callbackQuery) => {
   console.log(`📩 Callback recibido: ${data}`);
   await bot.answerCallbackQuery(callbackQuery.id);
 
-  if (['nacionales', 'internacionales', 'deportes', 'radio'].includes(data)) {
-    await sendChannelList(chatId, data);
+  if (data.startsWith('category_')) {
+    const category = data.replace('category_', '');
+    await sendChannelList(chatId, category);
   } else if (data.startsWith('channel_')) {
     const [_, category, index] = data.split('_');
     const channel = bot.tempChannels[category][parseInt(index)];
     if (channel) {
-      const options = {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔙 Volver al Menú', callback_data: 'back_to_menu' }],
-          ],
-        },
-      };
-      await bot.sendMessage(chatId, `📺 ${channel.name}\n🔗 [Ver en vivo](${channel.link})`, {
-        parse_mode: 'Markdown',
-        ...options,
-      });
+      try {
+        await bot.sendMessage(chatId, `📺 Generando fragmento de ${channel.name}...`);
+        const videoPath = await generateVideoFragment(channel.link, chatId);
+
+        // Enviar el video a Telegram
+        await bot.sendVideo(chatId, videoPath, {
+          caption: `📺 ${channel.name}`,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔙 Volver al Menú', callback_data: 'back_to_menu' }],
+            ],
+          },
+        });
+
+        // Eliminar el archivo temporal
+        fs.unlink(videoPath, (err) => {
+          if (err) console.error(`❌ Error al eliminar archivo: ${err.message}`);
+        });
+      } catch (error) {
+        await bot.sendMessage(chatId, `⚠️ Error al reproducir ${channel.name}: ${error.message}`);
+      }
     }
   } else if (data === 'back_to_menu') {
     await sendMainMenu(chatId);
+  } else if (data === 'help') {
+    await bot.sendMessage(chatId, 'ℹ️ Usa este bot para ver IPTV:\n- /start o /menu: Ver categorías.\n- /setiptv <URL>: Cambiar lista IPTV.\n- /test: Verificar estado.');
   }
 });
 
-console.log('🚀 Bot de TV en Vivo iniciado correctamente 🎉');
+console.log('🚀 Bot IPTV con Reproducción Directa iniciado correctamente 🎉');
