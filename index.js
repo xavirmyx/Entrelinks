@@ -21,10 +21,14 @@ const webhookUrl = 'https://entrelinks.onrender.com';
 let warnedUsers = {}; // { chatId: { userId: { username, reason, warnedAt, warningCount } } }
 let reminderActive = {}; // { chatId: true/false }
 let knownUsers = {}; // { chatId: { userId: { id, username, first_name } } } - Almacenar usuarios detectados
+let scannedUsers = {}; // { chatId: { userId: true } } - Almacenar usuarios ya escaneados
 const logsFile = 'bot_logs.json';
 
 // Número total de miembros (hardcodeado, ya que la API no lo proporciona)
 const TOTAL_MEMBERS = 7795;
+
+// Tamaño del bloque para escanear
+const BLOCK_SIZE = 500;
 
 // Inicializar el archivo de logs si no existe
 if (!fs.existsSync(logsFile)) {
@@ -116,6 +120,12 @@ function addKnownUser(chatId, user) {
   }
 }
 
+// Función para marcar un usuario como escaneado
+function markUserAsScanned(chatId, userId) {
+  if (!scannedUsers[chatId]) scannedUsers[chatId] = {};
+  scannedUsers[chatId][userId] = true;
+}
+
 // Función para enviar advertencia a un usuario en el grupo
 async function warnUserInGroup(user, chatId, reason) {
   const username = user.username ? `@${user.username}` : user.first_name;
@@ -185,7 +195,7 @@ bot.onText(/\/m1/, async (msg) => {
 
   const commandsList = `📋 **Lista de Comandos - Equipo de Administración Entre Hijos** 📋\n\n` +
     `🔍 **/busqueda**\n` +
-    `   Escanea los usuarios detectados en el grupo y detecta aquellos sin foto de perfil pública o @username. Envía una advertencia en el grupo a cada usuario detectado.\n\n` +
+    `   Escanea los usuarios detectados en el grupo en bloques de ${BLOCK_SIZE}, detectando aquellos sin foto de perfil pública o @username. Envía una advertencia en el grupo a cada usuario detectado.\n\n` +
     `🧹 **/limpiar**\n` +
     `   Genera mensajes de expulsión para los usuarios advertidos (formato: /kick @username (Motivo: ...)). Limpia la lista de advertidos.\n\n` +
     `📜 **/advertidos**\n` +
@@ -231,6 +241,7 @@ bot.onText(/\/detalles/, async (msg) => {
 
     // Obtener usuarios conocidos
     const users = knownUsers[chatId] ? Object.values(knownUsers[chatId]) : [];
+    const totalScanned = scannedUsers[chatId] ? Object.keys(scannedUsers[chatId]).length : 0;
 
     // Contar usuarios sin foto de perfil pública y sin @username
     let noPhotoCount = 0;
@@ -245,6 +256,7 @@ bot.onText(/\/detalles/, async (msg) => {
     const statsMessage = `📊 **Estadísticas del grupo - ${chat.title}** 📊\n\n` +
       `👥 **Número total de miembros**: ${TOTAL_MEMBERS}\n` +
       `👤 **Usuarios detectados**: ${users.length}\n` +
+      `🔍 **Usuarios escaneados**: ${totalScanned}\n` +
       `📸 **Usuarios sin foto de perfil pública**: ${noPhotoCount} (basado en usuarios detectados)\n` +
       `📛 **Usuarios sin @username**: ${noUsernameCount} (basado en usuarios detectados)\n\n` +
       `📢 Equipo de Administración Entre Hijos`;
@@ -256,7 +268,7 @@ bot.onText(/\/detalles/, async (msg) => {
   }
 });
 
-// Comando /busqueda: Escanear los usuarios detectados y advertir a los que no tengan foto de perfil pública o @username
+// Comando /busqueda: Escanear los usuarios detectados en bloques de 500
 bot.onText(/\/busqueda/, async (msg) => {
   const chatId = msg.chat.id;
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
@@ -273,27 +285,45 @@ bot.onText(/\/busqueda/, async (msg) => {
   try {
     // Obtener usuarios conocidos
     const users = knownUsers[chatId] ? Object.values(knownUsers[chatId]) : [];
-    const totalUsers = users.length;
+    const totalKnownUsers = users.length;
 
-    if (totalUsers === 0) {
+    if (totalKnownUsers === 0) {
       await bot.sendMessage(chatId, 'ℹ️ No se han detectado usuarios en el grupo todavía. Los usuarios se detectan cuando envían mensajes o se actualiza su estado en el grupo.\n\n📢 Equipo de Administración Entre Hijos');
       return;
     }
 
+    // Filtrar usuarios que no han sido escaneados
+    const unscannedUsers = users.filter(user => !scannedUsers[chatId]?.[user.id]);
+    const totalUnscanned = unscannedUsers.length;
+
+    if (totalUnscanned === 0) {
+      await bot.sendMessage(chatId, 'ℹ️ Todos los usuarios detectados ya han sido escaneados. Espera a que más usuarios interactúen en el grupo para continuar.\n\n📢 Equipo de Administración Entre Hijos');
+      return;
+    }
+
+    // Tomar un bloque de 500 usuarios (o menos si no hay suficientes)
+    const blockToScan = unscannedUsers.slice(0, BLOCK_SIZE);
+    const totalToScan = blockToScan.length;
+
     // Enviar mensaje inicial con barra de progreso
+    const totalScannedBefore = scannedUsers[chatId] ? Object.keys(scannedUsers[chatId]).length : 0;
     const progressMessage = await bot.sendMessage(chatId, `🔍 Iniciando búsqueda de usuarios sin foto de perfil pública o @username...\n` +
-      `ℹ️ Nota: Solo se escanean los usuarios detectados (${totalUsers} de ${TOTAL_MEMBERS} miembros).\n` +
-      `${generateProgressBar(0, totalUsers)}\n` +
-      `Usuarios procesados: 0/${totalUsers}\n\n` +
+      `ℹ️ Escaneando un bloque de ${totalToScan} usuarios (de ${totalKnownUsers} detectados, ${totalScannedBefore} ya escaneados).\n` +
+      `${generateProgressBar(0, totalToScan)}\n` +
+      `Usuarios procesados: 0/${totalToScan}\n\n` +
       `📢 Equipo de Administración Entre Hijos`);
 
     const botId = (await bot.getMe()).id;
     let processedMembers = 0;
     let warnedCount = 0;
 
-    // Procesar los usuarios detectados
-    for (const user of users) {
-      if (user.id === botId || user.is_bot) continue;
+    // Procesar el bloque de usuarios
+    for (const user of blockToScan) {
+      if (user.id === botId || user.is_bot) {
+        processedMembers++;
+        markUserAsScanned(chatId, user.id);
+        continue;
+      }
 
       const { hasPublicPhoto, hasUsername } = await checkUserProfile(user, chatId);
       if (!hasPublicPhoto) {
@@ -305,13 +335,15 @@ bot.onText(/\/busqueda/, async (msg) => {
       }
 
       processedMembers++;
+      markUserAsScanned(chatId, user.id);
+
       // Actualizar la barra de progreso cada 10 usuarios o al final
-      if (processedMembers % 10 === 0 || processedMembers === totalUsers) {
+      if (processedMembers % 10 === 0 || processedMembers === totalToScan) {
         await bot.editMessageText(
           `🔍 Buscando usuarios sin foto de perfil pública o @username...\n` +
-          `ℹ️ Nota: Solo se escanean los usuarios detectados (${totalUsers} de ${TOTAL_MEMBERS} miembros).\n` +
-          `${generateProgressBar(processedMembers, totalUsers)}\n` +
-          `Usuarios procesados: ${processedMembers}/${totalUsers}\n\n` +
+          `ℹ️ Escaneando un bloque de ${totalToScan} usuarios (de ${totalKnownUsers} detectados, ${totalScannedBefore} ya escaneados).\n` +
+          `${generateProgressBar(processedMembers, totalToScan)}\n` +
+          `Usuarios procesados: ${processedMembers}/${totalToScan}\n\n` +
           `📢 Equipo de Administración Entre Hijos`,
           { chat_id: chatId, message_id: progressMessage.message_id }
         );
@@ -322,12 +354,17 @@ bot.onText(/\/busqueda/, async (msg) => {
     }
 
     // Mensaje final
+    const totalScannedAfter = scannedUsers[chatId] ? Object.keys(scannedUsers[chatId]).length : 0;
+    const remainingUnscanned = totalKnownUsers - totalScannedAfter;
     const finalMessage = `✅ Búsqueda completada.\n` +
-      `ℹ️ Nota: Solo se escanearon los usuarios detectados (${totalUsers} de ${TOTAL_MEMBERS} miembros).\n` +
-      `${generateProgressBar(processedMembers, totalUsers)}\n` +
-      `Usuarios procesados: ${processedMembers}/${totalUsers}\n` +
+      `ℹ️ Se escanearon ${totalToScan} usuarios en este bloque.\n` +
+      `${generateProgressBar(processedMembers, totalToScan)}\n` +
+      `Usuarios procesados: ${processedMembers}/${totalToScan}\n` +
       `Se advirtieron a ${warnedCount} usuarios.\n` +
-      `Usa /advertidos para ver la lista de advertidos o /limpiar para preparar la expulsión.\n\n` +
+      `📊 Total escaneados: ${totalScannedAfter}/${totalKnownUsers} detectados (de ${TOTAL_MEMBERS} miembros).\n` +
+      `👀 Usuarios restantes por escanear: ${remainingUnscanned}\n` +
+      `Usa /advertidos para ver la lista de advertidos o /limpiar para preparar la expulsión.\n` +
+      `Ejecuta /busqueda nuevamente para escanear el siguiente bloque.\n\n` +
       `📢 Equipo de Administración Entre Hijos`;
 
     await bot.editMessageText(finalMessage, { chat_id: chatId, message_id: progressMessage.message_id });
