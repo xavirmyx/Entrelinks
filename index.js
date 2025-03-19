@@ -5,30 +5,28 @@ const axios = require('axios');
 const token = '7861676131:AAFLv4dBIFiHV1OYc8BJH2U8kWPal7lpBMQ';
 const bot = new TelegramBot(token);
 
-// Listas M3U predefinidas
-const m3uLists = [
+// Listas .txt desde tu repositorio de GitHub
+const contentLists = [
   {
-    name: "CHUKYHOOD DEPORTES",
-    image: "https://i.ibb.co/RbqRNzW/Chuky-Hood.jpg",
-    url: "https://raw.githubusercontent.com/chukyvaliente/Chuky-Hood/main/Chuky-Hood"
+    name: "DEPORTES",
+    url: "https://raw.githubusercontent.com/xavirmyx/Entrelinks/main/ChukyDeport.txt"
   },
   {
-    name: "CHUKYHOOD CINE",
-    image: "https://i.ibb.co/vQJ9W7j/chuky.jpg",
-    url: "https://raw.githubusercontent.com/chukyvaliente/chukycine/main/chukycine"
+    name: "PELÍCULAS",
+    url: "https://raw.githubusercontent.com/xavirmyx/Entrelinks/main/ChukyHoodCines.txt"
   }
 ];
 
-// Configuración del webhook
-const webhookUrl = 'https://entrelinks.onrender.com'; // Manteniendo tu webhook de Render
+// Configuración del webhook (usando Render como indicaste)
+const webhookUrl = 'https://entrelinks.onrender.com';
 bot.setWebHook(`${webhookUrl}/bot${token}`)
   .then(() => console.log(`✅ Webhook configurado: ${webhookUrl}/bot${token}`))
   .catch(err => console.error(`❌ Error al configurar webhook: ${err.message}`));
 
-// Función para extraer películas/canales de una lista M3U
-async function fetchMoviesFromM3U(m3uUrl) {
+// Función para extraer contenido de un archivo .txt
+async function fetchContentFromTxt(txtUrl) {
   try {
-    const { data } = await axios.get(m3uUrl, { timeout: 10000 });
+    const { data } = await axios.get(txtUrl, { timeout: 10000 });
     const lines = data.split('\n');
     const items = [];
 
@@ -46,18 +44,18 @@ async function fetchMoviesFromM3U(m3uUrl) {
       }
     }
 
-    console.log(`✅ Elementos extraídos de ${m3uUrl}: ${items.length}`);
+    console.log(`✅ Elementos extraídos de ${txtUrl}: ${items.length}`);
     return items;
   } catch (error) {
-    console.error(`❌ Error al extraer elementos de ${m3uUrl}: ${error.message}`);
+    console.error(`❌ Error al extraer contenido de ${txtUrl}: ${error.message}`);
     return [];
   }
 }
 
-// Menú principal con listas M3U
+// Menú principal con listas
 async function sendMainMenu(chatId) {
   console.log(`📤 Enviando menú principal a ${chatId}`);
-  const keyboard = m3uLists.map((list, index) => [
+  const keyboard = contentLists.map((list, index) => [
     { text: list.name, callback_data: `list_${index}` },
   ]);
 
@@ -65,21 +63,21 @@ async function sendMainMenu(chatId) {
     reply_markup: {
       inline_keyboard: [
         ...keyboard,
-        [{ text: '🔍 Buscar contenido', callback_data: 'search' }],
+        [{ text: '🔍 Buscar', callback_data: 'search' }],
         [{ text: 'ℹ️ Ayuda', callback_data: 'help' }],
       ],
     },
   };
-  await bot.sendMessage(chatId, '🎬 Bienvenido al Bot de Películas y Deportes M3U\nSelecciona una lista:', options);
+  await bot.sendMessage(chatId, '🎬 Bienvenido al Bot\nElige una categoría:', options);
 }
 
 // Mostrar contenido de una lista
 async function sendContentList(chatId, listIndex) {
-  const list = m3uLists[listIndex];
-  const items = await fetchMoviesFromM3U(list.url);
+  const list = contentLists[listIndex];
+  const items = await fetchContentFromTxt(list.url);
 
   if (items.length === 0) {
-    await bot.sendMessage(chatId, `⚠️ No se pudieron cargar elementos de "${list.name}".`);
+    await bot.sendMessage(chatId, `⚠️ No se pudo cargar contenido de "${list.name}".`);
     return;
   }
 
@@ -91,11 +89,11 @@ async function sendContentList(chatId, listIndex) {
     reply_markup: {
       inline_keyboard: [
         ...keyboard,
-        [{ text: '🔙 Retroceder', callback_data: 'back_to_menu' }],
+        [{ text: '🔙 Volver', callback_data: 'back_to_menu' }],
       ],
     },
   };
-  await bot.sendMessage(chatId, `🎬 Contenido en "${list.name}":`, options);
+  await bot.sendMessage(chatId, `📋 Contenido en "${list.name}":`, options);
 
   bot.tempItems = bot.tempItems || {};
   bot.tempItems[listIndex] = items;
@@ -104,8 +102,8 @@ async function sendContentList(chatId, listIndex) {
 // Mostrar resultados de búsqueda
 async function sendSearchResults(chatId, query) {
   const allItems = {};
-  for (let i = 0; i < m3uLists.length; i++) {
-    allItems[i] = await fetchMoviesFromM3U(m3uLists[i].url);
+  for (let i = 0; i < contentLists.length; i++) {
+    allItems[i] = await fetchContentFromTxt(contentLists[i].url);
   }
 
   const results = [];
@@ -130,11 +128,11 @@ async function sendSearchResults(chatId, query) {
     reply_markup: {
       inline_keyboard: [
         ...keyboard,
-        [{ text: '🔙 Retroceder', callback_data: 'back_to_menu' }],
+        [{ text: '🔙 Volver', callback_data: 'back_to_menu' }],
       ],
     },
   };
-  await bot.sendMessage(chatId, `🎬 Resultados para "${query}":`, options);
+  await bot.sendMessage(chatId, `🔍 Resultados para "${query}":`, options);
 
   bot.tempItems = allItems;
 }
@@ -151,13 +149,6 @@ bot.onText(/\/menu/, (msg) => {
   const chatId = msg.chat.id;
   console.log(`📩 Comando /menu recibido de ${chatId}`);
   sendMainMenu(chatId);
-});
-
-// Comando /test
-bot.onText(/\/test/, (msg) => {
-  const chatId = msg.chat.id;
-  console.log(`📩 Comando /test recibido de ${chatId}`);
-  bot.sendMessage(chatId, '✅ ¡El bot está vivo!');
 });
 
 // Comando /buscar
@@ -186,20 +177,20 @@ bot.on('callback_query', async (callbackQuery) => {
       const options = {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '🔙 Retroceder', callback_data: 'back_to_menu' }],
+            [{ text: '🔙 Volver', callback_data: 'back_to_menu' }],
           ],
         },
       };
       // Enviar el enlace directamente para reproducción en Telegram
-      await bot.sendMessage(chatId, `🎬 ${item.title}\nEnlace para reproducir:\n${item.link}`, options);
+      await bot.sendMessage(chatId, `📺 ${item.title}\nReproduce aquí:\n${item.link}`, options);
     }
   } else if (data === 'search') {
-    await bot.sendMessage(chatId, '🔍 Escribe /buscar <nombre del contenido> para buscar.');
+    await bot.sendMessage(chatId, '🔍 Usa /buscar <nombre> para encontrar contenido.');
   } else if (data === 'back_to_menu') {
     await sendMainMenu(chatId);
   } else if (data === 'help') {
-    await bot.sendMessage(chatId, 'ℹ️ Usa este bot para ver películas y deportes desde listas M3U:\n- /start o /menu: Ver listas.\n- /buscar <nombre>: Buscar contenido.\n- /test: Verificar estado.');
+    await bot.sendMessage(chatId, 'ℹ️ Instrucciones:\n- /start o /menu: Ver categorías.\n- /buscar <nombre>: Buscar contenido.\n- Usa los botones para navegar.');
   }
 });
 
-console.log('🚀 Bot de Películas y Deportes M3U iniciado correctamente 🎉');
+console.log('🚀 Bot iniciado correctamente 🎉');
