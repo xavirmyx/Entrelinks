@@ -195,4 +195,10 @@ bot.on('callback_query', async (callbackQuery) => {
   }
 });
 
+// Mantener el proceso activo para Render (opcional, para depuración)
+process.on('SIGTERM', () => {
+  console.log('Recibida señal SIGTERM. Cerrando el bot...');
+  process.exit(0);
+});
+
 console.log('🚀 Bot iniciado correctamente 🎉');
