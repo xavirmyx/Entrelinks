@@ -71,29 +71,49 @@ async function checkUserProfile(user, chatId) {
   return { hasPublicPhoto, hasUsername };
 }
 
-// Función para enviar advertencia a un usuario
-async function warnUser(user, chatId, reason) {
+// Función para enviar advertencia a un usuario en el grupo
+async function warnUserInGroup(user, chatId, reason) {
   const username = user.username ? `@${user.username}` : user.first_name;
+  const userId = user.id;
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowStr = tomorrow.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' });
 
-  const message = `⚠️ Hola ${username},\n\n` +
-    `Hemos detectado que no tienes ${reason}. Por favor, configúralo antes del ${tomorrowStr}, ` +
+  const message = `⚠️ ${username} (ID: ${userId}),\n` +
+    `No tienes ${reason}. Por favor, configúralo antes del ${tomorrowStr}, ` +
     `o serás expulsado del grupo.\n\n` +
     `📢 Equipo de Administración Entre Hijos`;
 
   try {
-    await bot.sendMessage(user.id, message);
+    await bot.sendMessage(chatId, message);
     warnedUsers[user.id] = { username: user.username || user.first_name, reason, warnedAt: new Date() };
-    console.log(`📩 Advertencia enviada a ${username} por: ${reason}`);
+    console.log(`📩 Advertencia enviada a ${username} (ID: ${userId}) por: ${reason}`);
   } catch (error) {
-    console.error(`❌ Error al enviar advertencia a ${user.id}: ${error.message}`);
-    await bot.sendMessage(chatId, `❌ No pude enviar un mensaje privado a ${username}. Por favor, asegúrate de que el usuario permita mensajes privados.`);
+    console.error(`❌ Error al enviar advertencia en el grupo para ${user.id}: ${error.message}`);
   }
 }
 
-// Comando /busqueda: Escanear el grupo y advertir a los usuarios
+// Comando /m1: Mostrar lista de comandos
+bot.onText(/\/m1/, async (msg) => {
+  const chatId = msg.chat.id;
+  const commandsList = `📋 **Lista de Comandos - Equipo de Administración Entre Hijos** 📋\n\n` +
+    `🔍 **/busqueda**\n` +
+    `   Escanea el grupo y detecta usuarios sin foto de perfil pública o @username. Envía una advertencia en el grupo a cada usuario detectado.\n\n` +
+    `🧹 **/limpiar**\n` +
+    `   Genera mensajes de expulsión para los usuarios advertidos (formato: /kick @username (Motivo: ...)). Limpia la lista de advertidos.\n\n` +
+    `📜 **/advertidos**\n` +
+    `   Muestra una lista de los usuarios que han sido advertidos, con el motivo y la fecha de advertencia.\n\n` +
+    `ℹ️ **/m1**\n` +
+    `   Muestra esta lista de comandos con una descripción detallada.\n\n` +
+    `📢 **Funcionalidades automáticas**:\n` +
+    `   - Detecta cambios de @username y lo notifica en el grupo.\n` +
+    `   - Restringe mensajes de usuarios sin foto de perfil pública o @username, enviando una advertencia en el grupo.\n\n` +
+    `📢 Equipo de Administración Entre Hijos`;
+
+  await bot.sendMessage(chatId, commandsList, { parse_mode: 'Markdown' });
+});
+
+// Comando /busqueda: Escanear el grupo y advertir a los usuarios en el grupo
 bot.onText(/\/busqueda/, async (msg) => {
   const chatId = msg.chat.id;
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
@@ -103,45 +123,43 @@ bot.onText(/\/busqueda/, async (msg) => {
 
   try {
     await bot.sendMessage(chatId, '🔍 Iniciando búsqueda de usuarios sin foto de perfil pública o @username...');
-    const members = await bot.getChatAdministrators(chatId);
     const botId = (await bot.getMe()).id;
-    const allMembers = await bot.getChatMembersCount(chatId);
-    let checkedMembers = 0;
+    const members = await bot.getChatMembersCount(chatId);
+    const chatMembers = [];
 
-    // Obtener todos los miembros del grupo (esto puede requerir iterar si el grupo es muy grande)
-    const chatMembers = await bot.getChat(chatId);
-    const memberPromises = [];
+    // Obtener miembros del grupo (limitado a 200 por solicitud)
     let offset = 0;
-    const limit = 200; // Límite de miembros por solicitud
-
-    while (checkedMembers < allMembers) {
-      memberPromises.push(
-        bot.getChatMembers(chatId, { offset, limit }).catch(err => {
-          console.error(`❌ Error al obtener miembros: ${err.message}`);
-          return [];
-        })
-      );
-      offset += limit;
-      checkedMembers += limit;
+    const limit = 200;
+    while (offset < members) {
+      try {
+        const batch = await bot.getChatMembers(chatId, { offset, limit });
+        chatMembers.push(...batch);
+        offset += limit;
+      } catch (error) {
+        console.error(`❌ Error al obtener miembros (offset ${offset}): ${error.message}`);
+        break;
+      }
+      // Pequeña pausa para evitar límites de la API
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    const membersList = (await Promise.all(memberPromises)).flat().map(member => member.user);
-    const uniqueMembers = membersList.filter(
-      (member, index, self) => index === self.findIndex(m => m.id === member.id) && member.id !== botId
-    );
+    const uniqueMembers = chatMembers
+      .map(member => member.user)
+      .filter((member, index, self) => 
+        index === self.findIndex(m => m.id === member.id) && member.id !== botId && !member.is_bot);
 
     let warnedCount = 0;
     for (const member of uniqueMembers) {
-      if (member.is_bot) continue;
-
       const { hasPublicPhoto, hasUsername } = await checkUserProfile(member, chatId);
       if (!hasPublicPhoto) {
-        await warnUser(member, chatId, 'foto de perfil pública');
+        await warnUserInGroup(member, chatId, 'foto de perfil pública');
         warnedCount++;
       } else if (!hasUsername) {
-        await warnUser(member, chatId, '@username');
+        await warnUserInGroup(member, chatId, '@username');
         warnedCount++;
       }
+      // Pequeña pausa para evitar límites de la API
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
 
     await bot.sendMessage(chatId, `✅ Búsqueda completada. Se advirtieron a ${warnedCount} usuarios.\n` +
@@ -171,6 +189,8 @@ bot.onText(/\/limpiar/, async (msg) => {
     const reason = user.reason === 'foto de perfil pública' ? 'falta foto de perfil pública' : 'falta @username';
     const message = `/kick @${user.username} (Motivo: ${reason})`;
     await bot.sendMessage(chatId, message);
+    // Pequeña pausa para evitar límites de la API
+    await new Promise(resolve => setTimeout(resolve, 50));
   }
 
   // Limpiar la lista de advertidos después de generar los mensajes
@@ -205,18 +225,16 @@ bot.onText(/\/advertidos/, async (msg) => {
 });
 
 // Detectar cambios de @username (similar a SangMata)
-bot.on('message', async (msg) => {
-  if (msg.new_chat_member || msg.chat_member) {
-    const user = msg.new_chat_member || msg.chat_member?.user;
-    if (!user) return;
+bot.on('chat_member', async (msg) => {
+  const user = msg.new_chat_member?.user;
+  if (!user) return;
 
-    const oldUsername = msg.old_chat_member?.user?.username;
-    const newUsername = user.username;
+  const oldUsername = msg.old_chat_member?.user?.username;
+  const newUsername = user.username;
 
-    if (oldUsername !== newUsername && oldUsername && newUsername) {
-      const chatId = msg.chat.id;
-      await bot.sendMessage(chatId, `🔄 @${oldUsername} ha cambiado su nombre a @${newUsername}`);
-    }
+  if (oldUsername !== newUsername && oldUsername && newUsername) {
+    const chatId = msg.chat.id;
+    await bot.sendMessage(chatId, `🔄 @${oldUsername} ha cambiado su nombre a @${newUsername}`);
   }
 });
 
@@ -225,6 +243,7 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
   if (msg.from.is_bot) return;
+  if (msg.text && msg.text.startsWith('/')) return; // Permitir comandos
 
   const { hasPublicPhoto, hasUsername } = await checkUserProfile(msg.from, chatId);
   if (!hasPublicPhoto || !hasUsername) {
