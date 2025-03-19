@@ -1,7 +1,7 @@
 {
-  "name": "pelisflix2-movie-bot",
+  "name": "m3u-movie-bot",
   "version": "1.0.0",
-  "description": "Bot de Telegram para ver películas desde pelisflix2.now",
+  "description": "Bot de Telegram para ver películas desde listas M3U",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,7 +9,6 @@
   "dependencies": {
     "express": "^4.19.2",
     "node-telegram-bot-api": "^0.66.0",
-    "axios": "^1.7.7",
-    "cheerio": "^1.0.0-rc.12"
+    "axios": "^1.7.7"
   }
 }
