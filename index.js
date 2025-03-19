@@ -4,6 +4,7 @@ const axios = require('axios');
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
+const https = require('https'); // Para manejar SSL
 
 // Token del bot
 const token = '7861676131:AAFLv4dBIFiHV1OYc8BJH2U8kWPal7lpBMQ';
@@ -15,6 +16,14 @@ const port = process.env.PORT || 10000;
 
 // URL inicial de la lista IPTV M3U
 let iptvUrl = 'https://coco3.jimaplus.xyz:8080/get.php?username=4679659584&password=4469385344&type=m3u_plus';
+
+// Configuración de axios con agente HTTPS flexible
+const axiosInstance = axios.create({
+  httpsAgent: new https.Agent({
+    rejectUnauthorized: false, // Ignora certificados no válidos (riesgoso, solo para pruebas)
+    secureOptions: require('constants').SSL_OP_LEGACY_SERVER_CONNECT, // Permite conexiones legacy
+  }),
+});
 
 // Middleware para parsear JSON
 app.use(express.json());
@@ -29,7 +38,7 @@ app.post(`/bot${token}`, (req, res) => {
 // Iniciar el servidor
 app.listen(port, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${port}`);
-  const webhookUrl = process.env.WEBHOOK_URL || 'https://entrelinks.onrender.com'; // ¡Reemplaza con tu URL real de Render!
+  const webhookUrl = process.env.WEBHOOK_URL || 'https://entrelinks.onrender.com';
   bot.setWebHook(`${webhookUrl}/bot${token}`)
     .then(() => console.log(`✅ Webhook configurado: ${webhookUrl}/bot${token}`))
     .catch(err => console.error(`❌ Error al configurar webhook: ${err.message}`));
@@ -38,7 +47,7 @@ app.listen(port, () => {
 // Función para extraer canales de la lista M3U
 async function fetchChannels() {
   try {
-    const { data } = await axios.get(iptvUrl, { timeout: 10000 });
+    const { data } = await axiosInstance.get(iptvUrl, { timeout: 15000 });
     const lines = data.split('\n');
     const channels = {};
 
@@ -77,7 +86,7 @@ async function generateVideoFragment(streamUrl, chatId) {
       .format('mp4')
       .videoCodec('libx264')
       .audioCodec('aac')
-      .duration(10) // Fragmento de 10 segundos
+      .duration(10)
       .on('end', () => {
         console.log(`✅ Fragmento generado: ${outputPath}`);
         resolve(outputPath);
@@ -97,7 +106,7 @@ async function sendMainMenu(chatId) {
   const categories = Object.keys(channels);
 
   if (categories.length === 0) {
-    await bot.sendMessage(chatId, '⚠️ No se pudieron cargar los canales. Verifica la URL IPTV.');
+    await bot.sendMessage(chatId, `⚠️ No se pudieron cargar los canales de la lista IPTV (${iptvUrl}). Prueba con /setiptv <nueva-url>.`);
     return;
   }
 
@@ -134,7 +143,6 @@ async function sendChannelList(chatId, category) {
   };
   await bot.sendMessage(chatId, `📺 Canales en ${category}:`, options);
 
-  // Almacenar canales temporalmente
   bot.tempChannels = channels;
 }
 
@@ -188,7 +196,6 @@ bot.on('callback_query', async (callbackQuery) => {
         await bot.sendMessage(chatId, `📺 Generando fragmento de ${channel.name}...`);
         const videoPath = await generateVideoFragment(channel.link, chatId);
 
-        // Enviar el video a Telegram
         await bot.sendVideo(chatId, videoPath, {
           caption: `📺 ${channel.name}`,
           reply_markup: {
@@ -198,7 +205,6 @@ bot.on('callback_query', async (callbackQuery) => {
           },
         });
 
-        // Eliminar el archivo temporal
         fs.unlink(videoPath, (err) => {
           if (err) console.error(`❌ Error al eliminar archivo: ${err.message}`);
         });
