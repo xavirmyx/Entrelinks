@@ -1,10 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const axios = require('axios');
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const path = require('path');
-const https = require('https'); // Para manejar SSL
+const cheerio = require('cheerio');
 
 // Token del bot
 const token = '7861676131:AAFLv4dBIFiHV1OYc8BJH2U8kWPal7lpBMQ';
@@ -14,16 +11,8 @@ const bot = new TelegramBot(token);
 const app = express();
 const port = process.env.PORT || 10000;
 
-// URL inicial de la lista IPTV M3U
-let iptvUrl = 'https://coco3.jimaplus.xyz:8080/get.php?username=4679659584&password=4469385344&type=m3u_plus';
-
-// Configuración de axios con agente HTTPS flexible
-const axiosInstance = axios.create({
-  httpsAgent: new https.Agent({
-    rejectUnauthorized: false, // Ignora certificados no válidos (riesgoso, solo para pruebas)
-    secureOptions: require('constants').SSL_OP_LEGACY_SERVER_CONNECT, // Permite conexiones legacy
-  }),
-});
+// URL base de yaske.ru (ajustable si hay una subpágina específica)
+const YASKE_URL = 'https://yaske.ru/'; // Cambiar a la URL de listado si es diferente
 
 // Middleware para parsear JSON
 app.use(express.json());
@@ -35,6 +24,31 @@ app.post(`/bot${token}`, (req, res) => {
   res.sendStatus(200);
 });
 
+// Ruta para el reproductor web
+app.get('/play', (req, res) => {
+  const streamUrl = req.query.url;
+  if (!streamUrl) {
+    return res.status(400).send('No se proporcionó URL de stream.');
+  }
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Yaske Reproductor</title>
+      <style>
+        body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        iframe { width: 100%; max-width: 800px; height: 450px; border: none; }
+      </style>
+    </head>
+    <body>
+      <iframe src="${streamUrl}" allowfullscreen></iframe>
+    </body>
+    </html>
+  `;
+  res.send(html);
+});
+
 // Iniciar el servidor
 app.listen(port, () => {
   console.log(`🚀 Servidor escuchando en el puerto ${port}`);
@@ -44,106 +58,97 @@ app.listen(port, () => {
     .catch(err => console.error(`❌ Error al configurar webhook: ${err.message}`));
 });
 
-// Función para extraer canales de la lista M3U
-async function fetchChannels() {
+// Función para extraer películas de yaske.ru
+async function fetchMovies() {
   try {
-    const { data } = await axiosInstance.get(iptvUrl, { timeout: 15000 });
-    const lines = data.split('\n');
-    const channels = {};
+    const { data } = await axios.get(YASKE_URL, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+      },
+      timeout: 10000,
+    });
+    const $ = cheerio.load(data);
+    const movies = [];
 
-    let currentChannel = null;
-    for (const line of lines) {
-      if (line.startsWith('#EXTINF')) {
-        const titleMatch = line.match(/group-title="([^"]+)".*?,(.+)/);
-        if (titleMatch) {
-          const category = titleMatch[1] || 'Sin categoría';
-          const name = titleMatch[2].trim();
-          currentChannel = { name, category };
-          if (!channels[category]) channels[category] = [];
-        }
-      } else if (line.startsWith('http') && currentChannel) {
-        currentChannel.link = line.trim();
-        channels[currentChannel.category].push(currentChannel);
-        currentChannel = null;
+    // Ajusta este selector según la estructura real de yaske.ru
+    $('div.movie-item').each((i, element) => {
+      const title = $(element).find('.title').text().trim() || 'Película sin título';
+      const link = $(element).find('a').attr('href');
+      if (title && link) {
+        movies.push({
+          title,
+          link: link.startsWith('http') ? link : `${YASKE_URL}${link}`,
+        });
       }
-    }
+    });
 
-    console.log(`✅ Canales extraídos: ${Object.keys(channels).length} categorías`);
-    return channels;
+    console.log(`✅ Películas extraídas: ${movies.length}`);
+    return movies;
   } catch (error) {
-    console.error(`❌ Error al extraer canales de IPTV: ${error.message}`);
-    return {};
+    console.error(`❌ Error al extraer películas: ${error.message}`);
+    return [];
   }
 }
 
-// Función para generar un fragmento MP4 del stream
-async function generateVideoFragment(streamUrl, chatId) {
-  const outputPath = path.join(__dirname, `temp_${Date.now()}.mp4`);
-
-  return new Promise((resolve, reject) => {
-    ffmpeg(streamUrl)
-      .output(outputPath)
-      .format('mp4')
-      .videoCodec('libx264')
-      .audioCodec('aac')
-      .duration(10)
-      .on('end', () => {
-        console.log(`✅ Fragmento generado: ${outputPath}`);
-        resolve(outputPath);
-      })
-      .on('error', (err) => {
-        console.error(`❌ Error al generar fragmento: ${err.message}`);
-        reject(err);
-      })
-      .run();
-  });
+// Función para buscar una película específica
+async function searchMovie(query) {
+  const movies = await fetchMovies();
+  const results = movies.filter(movie => 
+    movie.title.toLowerCase().includes(query.toLowerCase())
+  );
+  return results;
 }
 
 // Menú principal
 async function sendMainMenu(chatId) {
   console.log(`📤 Enviando menú principal a ${chatId}`);
-  const channels = await fetchChannels();
-  const categories = Object.keys(channels);
+  const movies = await fetchMovies();
 
-  if (categories.length === 0) {
-    await bot.sendMessage(chatId, `⚠️ No se pudieron cargar los canales de la lista IPTV (${iptvUrl}). Prueba con /setiptv <nueva-url>.`);
+  if (movies.length === 0) {
+    await bot.sendMessage(chatId, '⚠️ No se pudieron cargar películas de yaske.ru. Intenta más tarde.');
     return;
   }
 
-  const keyboard = categories.slice(0, 10).map(category => [
-    { text: category, callback_data: `category_${category}` },
+  const keyboard = movies.slice(0, 10).map((movie, index) => [
+    { text: movie.title, callback_data: `movie_${index}` },
   ]);
 
   const options = {
     reply_markup: {
-      inline_keyboard: [...keyboard, [{ text: 'ℹ️ Ayuda', callback_data: 'help' }]],
+      inline_keyboard: [
+        ...keyboard,
+        [{ text: '🔍 Buscar película', callback_data: 'search' }],
+        [{ text: 'ℹ️ Ayuda', callback_data: 'help' }],
+      ],
     },
   };
-  await bot.sendMessage(chatId, '📺 Bienvenido al Bot IPTV\nSelecciona una categoría:', options);
+  await bot.sendMessage(chatId, '🎬 Bienvenido al Bot de Películas Yaske\nSelecciona una película reciente:', options);
+
+  bot.tempMovies = movies;
 }
 
-// Mostrar lista de canales
-async function sendChannelList(chatId, category) {
-  const channels = await fetchChannels();
-  const channelList = channels[category] || [];
+// Mostrar resultados de búsqueda
+async function sendSearchResults(chatId, query) {
+  const results = await searchMovie(query);
 
-  if (channelList.length === 0) {
-    await bot.sendMessage(chatId, `⚠️ No hay canales en ${category}.`);
+  if (results.length === 0) {
+    await bot.sendMessage(chatId, `⚠️ No se encontraron resultados para "${query}".`);
     return;
   }
 
-  const keyboard = channelList.slice(0, 20).map((channel, index) => [
-    { text: channel.name, callback_data: `channel_${category}_${index}` },
+  const keyboard = results.slice(0, 10).map((movie, index) => [
+    { text: movie.title, callback_data: `movie_${bot.tempMovies.indexOf(movie)}` },
   ]);
 
   const options = {
     reply_markup: {
-      inline_keyboard: keyboard,
+      inline_keyboard: [
+        ...keyboard,
+        [{ text: '🔙 Retroceder', callback_data: 'back_to_menu' }],
+      ],
     },
   };
-  await bot.sendMessage(chatId, `📺 Canales en ${category}:`, options);
-
-  bot.tempChannels = channels;
+  await bot.sendMessage(chatId, `🎬 Resultados para "${query}":`, options);
 }
 
 // Comando /start
@@ -167,56 +172,45 @@ bot.onText(/\/test/, (msg) => {
   bot.sendMessage(chatId, '✅ ¡El bot está vivo!');
 });
 
-// Comando /setiptv para cambiar la URL
-bot.onText(/\/setiptv (.+)/, (msg, match) => {
+// Comando /search
+bot.onText(/\/search (.+)/, (msg, match) => {
   const chatId = msg.chat.id;
-  const newUrl = match[1];
-  console.log(`📩 Comando /setiptv recibido de ${chatId}: ${newUrl}`);
-
-  iptvUrl = newUrl;
-  bot.sendMessage(chatId, `✅ Lista IPTV actualizada a: ${newUrl}\nUsa /menu para ver los canales.`);
+  const query = match[1];
+  console.log(`📩 Comando /search recibido de ${chatId}: ${query}`);
+  sendSearchResults(chatId, query);
 });
 
 // Manejar callbacks de los botones
 bot.on('callback_query', async (callbackQuery) => {
   const chatId = callbackQuery.message.chat.id;
   const data = callbackQuery.data;
+  const webhookUrl = process.env.WEBHOOK_URL || 'https://entrelinks.onrender.com';
 
   console.log(`📩 Callback recibido: ${data}`);
   await bot.answerCallbackQuery(callbackQuery.id);
 
-  if (data.startsWith('category_')) {
-    const category = data.replace('category_', '');
-    await sendChannelList(chatId, category);
-  } else if (data.startsWith('channel_')) {
-    const [_, category, index] = data.split('_');
-    const channel = bot.tempChannels[category][parseInt(index)];
-    if (channel) {
-      try {
-        await bot.sendMessage(chatId, `📺 Generando fragmento de ${channel.name}...`);
-        const videoPath = await generateVideoFragment(channel.link, chatId);
-
-        await bot.sendVideo(chatId, videoPath, {
-          caption: `📺 ${channel.name}`,
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🔙 Volver al Menú', callback_data: 'back_to_menu' }],
-            ],
-          },
-        });
-
-        fs.unlink(videoPath, (err) => {
-          if (err) console.error(`❌ Error al eliminar archivo: ${err.message}`);
-        });
-      } catch (error) {
-        await bot.sendMessage(chatId, `⚠️ Error al reproducir ${channel.name}: ${error.message}`);
-      }
+  if (data.startsWith('movie_')) {
+    const index = parseInt(data.split('_')[1]);
+    const movie = bot.tempMovies[index];
+    if (movie) {
+      const playUrl = `${webhookUrl}/play?url=${encodeURIComponent(movie.link)}`;
+      const options = {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '▶️ Reproducir', url: playUrl }],
+            [{ text: '🔙 Retroceder', callback_data: 'back_to_menu' }],
+          ],
+        },
+      };
+      await bot.sendMessage(chatId, `🎬 ${movie.title}\nHaz clic para reproducir:`, options);
     }
+  } else if (data === 'search') {
+    await bot.sendMessage(chatId, '🔍 Escribe /search <nombre de la película> para buscar.');
   } else if (data === 'back_to_menu') {
     await sendMainMenu(chatId);
   } else if (data === 'help') {
-    await bot.sendMessage(chatId, 'ℹ️ Usa este bot para ver IPTV:\n- /start o /menu: Ver categorías.\n- /setiptv <URL>: Cambiar lista IPTV.\n- /test: Verificar estado.');
+    await bot.sendMessage(chatId, 'ℹ️ Usa este bot para ver películas de yaske.ru:\n- /start o /menu: Ver películas recientes.\n- /search <nombre>: Buscar una película.\n- /test: Verificar estado.');
   }
 });
 
-console.log('🚀 Bot IPTV con Reproducción Directa iniciado correctamente 🎉');
+console.log('🚀 Bot de Películas Yaske iniciado correctamente 🎉');
