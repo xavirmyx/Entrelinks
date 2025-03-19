@@ -11,8 +11,8 @@ const bot = new TelegramBot(token);
 const app = express();
 const port = process.env.PORT || 10000;
 
-// URL base de repelisplus.lat
-const REPELIS_URL = 'https://repelisplus.lat';
+// URL base de pelisflix2.now
+const PELISFLIX_URL = 'https://pelisflix2.now/peliculas-online/';
 
 // Middleware para parsear JSON
 app.use(express.json());
@@ -35,7 +35,7 @@ app.get('/play', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Reproductor RepelisPlus</title>
+      <title>Reproductor PelisFlix2</title>
       <style>
         body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }
         iframe { width: 100%; max-width: 800px; height: 450px; border: none; }
@@ -61,7 +61,7 @@ app.listen(port, () => {
 // Función para extraer películas de la página principal
 async function fetchMovies() {
   try {
-    const { data } = await axios.get(REPELIS_URL, {
+    const { data } = await axios.get(PELISFLIX_URL, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
       },
@@ -70,13 +70,13 @@ async function fetchMovies() {
     const $ = cheerio.load(data);
     const movies = [];
 
-    $('article.item').each((i, element) => {
+    $('article.movie-item').each((i, element) => {
       const title = $(element).find('.title').text().trim() || 'Película sin título';
       const link = $(element).find('a').attr('href');
       if (title && link) {
         movies.push({
           title,
-          link: link.startsWith('http') ? link : `${REPELIS_URL}${link}`,
+          link: link.startsWith('http') ? link : `${PELISFLIX_URL.replace('/peliculas-online/', '')}${link}`,
         });
       }
     });
@@ -101,7 +101,7 @@ async function fetchPlayers(movieUrl) {
     const $ = cheerio.load(data);
     const players = [];
 
-    $('ul.list-server li').each((i, element) => {
+    $('ul.player-options li').each((i, element) => {
       const name = $(element).text().trim() || `Reproductor ${i + 1}`;
       const link = $(element).attr('data-url') || $(element).find('iframe').attr('src');
       if (link) {
@@ -132,7 +132,7 @@ async function sendMainMenu(chatId) {
   const movies = await fetchMovies();
 
   if (movies.length === 0) {
-    await bot.sendMessage(chatId, '⚠️ No se pudieron cargar películas de repelisplus.lat. Intenta más tarde.');
+    await bot.sendMessage(chatId, '⚠️ No se pudieron cargar películas de pelisflix2.now. Intenta más tarde.');
     return;
   }
 
@@ -149,7 +149,7 @@ async function sendMainMenu(chatId) {
       ],
     },
   };
-  await bot.sendMessage(chatId, '🎬 Bienvenido al Bot de Películas RepelisPlus\nSelecciona una película reciente:', options);
+  await bot.sendMessage(chatId, '🎬 Bienvenido al Bot de Películas PelisFlix2\nSelecciona una película reciente:', options);
 
   bot.tempMovies = movies;
 }
@@ -250,8 +250,8 @@ bot.on('callback_query', async (callbackQuery) => {
   } else if (data === 'back_to_menu') {
     await sendMainMenu(chatId);
   } else if (data === 'help') {
-    await bot.sendMessage(chatId, 'ℹ️ Usa este bot para ver películas de repelisplus.lat:\n- /start o /menu: Ver películas recientes.\n- /buscar <nombre>: Buscar una película.\n- /test: Verificar estado.');
+    await bot.sendMessage(chatId, 'ℹ️ Usa este bot para ver películas de pelisflix2.now:\n- /start o /menu: Ver películas recientes.\n- /buscar <nombre>: Buscar una película.\n- /test: Verificar estado.');
   }
 });
 
-console.log('🚀 Bot de Películas RepelisPlus iniciado correctamente 🎉');
+console.log('🚀 Bot de Películas PelisFlix2 iniciado correctamente 🎉');

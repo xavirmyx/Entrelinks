@@ -1,7 +1,7 @@
 {
-  "name": "repelisplus-movie-bot",
+  "name": "pelisflix2-movie-bot",
   "version": "1.0.0",
-  "description": "Bot de Telegram para ver películas desde repelisplus.lat",
+  "description": "Bot de Telegram para ver películas desde pelisflix2.now",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
