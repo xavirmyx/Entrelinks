@@ -20,6 +20,7 @@ const webhookUrl = 'https://entrelinks.onrender.com';
 // Almacenar datos por grupo
 let warnedUsers = {}; // { chatId: { userId: { username, reason, warnedAt, warningCount } } }
 let reminderActive = {}; // { chatId: true/false }
+let knownUsers = {}; // { chatId: { userId: { id, username, first_name } } } - Almacenar usuarios detectados
 const logsFile = 'bot_logs.json';
 
 // Número total de miembros (hardcodeado, ya que la API no lo proporciona)
@@ -103,6 +104,18 @@ async function isBotAdmin(chatId) {
   }
 }
 
+// Función para añadir un usuario a la lista de usuarios conocidos
+function addKnownUser(chatId, user) {
+  if (!knownUsers[chatId]) knownUsers[chatId] = {};
+  if (!knownUsers[chatId][user.id]) {
+    knownUsers[chatId][user.id] = {
+      id: user.id,
+      username: user.username || null,
+      first_name: user.first_name
+    };
+  }
+}
+
 // Función para enviar advertencia a un usuario en el grupo
 async function warnUserInGroup(user, chatId, reason) {
   const username = user.username ? `@${user.username}` : user.first_name;
@@ -172,7 +185,7 @@ bot.onText(/\/m1/, async (msg) => {
 
   const commandsList = `📋 **Lista de Comandos - Equipo de Administración Entre Hijos** 📋\n\n` +
     `🔍 **/busqueda**\n` +
-    `   Escanea el grupo y detecta usuarios sin foto de perfil pública o @username. Envía una advertencia en el grupo a cada usuario detectado.\n\n` +
+    `   Escanea los usuarios detectados en el grupo y detecta aquellos sin foto de perfil pública o @username. Envía una advertencia en el grupo a cada usuario detectado.\n\n` +
     `🧹 **/limpiar**\n` +
     `   Genera mensajes de expulsión para los usuarios advertidos (formato: /kick @username (Motivo: ...)). Limpia la lista de advertidos.\n\n` +
     `📜 **/advertidos**\n` +
@@ -216,14 +229,13 @@ bot.onText(/\/detalles/, async (msg) => {
     // Obtener información del chat
     const chat = await bot.getChat(chatId);
 
-    // Obtener administradores para estadísticas (única forma de obtener algunos miembros con la API)
-    const admins = await bot.getChatAdministrators(chatId);
-    const adminUsers = admins.map(admin => admin.user);
+    // Obtener usuarios conocidos
+    const users = knownUsers[chatId] ? Object.values(knownUsers[chatId]) : [];
 
     // Contar usuarios sin foto de perfil pública y sin @username
     let noPhotoCount = 0;
     let noUsernameCount = 0;
-    for (const user of adminUsers) {
+    for (const user of users) {
       const { hasPublicPhoto, hasUsername } = await checkUserProfile(user, chatId);
       if (!hasPublicPhoto) noPhotoCount++;
       if (!hasUsername) noUsernameCount++;
@@ -232,8 +244,9 @@ bot.onText(/\/detalles/, async (msg) => {
 
     const statsMessage = `📊 **Estadísticas del grupo - ${chat.title}** 📊\n\n` +
       `👥 **Número total de miembros**: ${TOTAL_MEMBERS}\n` +
-      `📸 **Usuarios sin foto de perfil pública**: ${noPhotoCount} (basado en administradores)\n` +
-      `📛 **Usuarios sin @username**: ${noUsernameCount} (basado en administradores)\n\n` +
+      `👤 **Usuarios detectados**: ${users.length}\n` +
+      `📸 **Usuarios sin foto de perfil pública**: ${noPhotoCount} (basado en usuarios detectados)\n` +
+      `📛 **Usuarios sin @username**: ${noUsernameCount} (basado en usuarios detectados)\n\n` +
       `📢 Equipo de Administración Entre Hijos`;
 
     await bot.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown' });
@@ -243,7 +256,7 @@ bot.onText(/\/detalles/, async (msg) => {
   }
 });
 
-// Comando /busqueda: Escanear el grupo y advertir a los usuarios en el grupo
+// Comando /busqueda: Escanear los usuarios detectados y advertir a los que no tengan foto de perfil pública o @username
 bot.onText(/\/busqueda/, async (msg) => {
   const chatId = msg.chat.id;
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
@@ -258,48 +271,47 @@ bot.onText(/\/busqueda/, async (msg) => {
   }
 
   try {
-    // Obtener administradores (única forma de obtener algunos miembros con la API)
-    const admins = await bot.getChatAdministrators(chatId);
-    const adminUsers = admins.map(admin => admin.user);
-    const totalAdmins = adminUsers.length;
+    // Obtener usuarios conocidos
+    const users = knownUsers[chatId] ? Object.values(knownUsers[chatId]) : [];
+    const totalUsers = users.length;
 
-    if (totalAdmins === 0) {
-      await bot.sendMessage(chatId, 'ℹ️ No se encontraron administradores para escanear en el grupo.\n\n📢 Equipo de Administración Entre Hijos');
+    if (totalUsers === 0) {
+      await bot.sendMessage(chatId, 'ℹ️ No se han detectado usuarios en el grupo todavía. Los usuarios se detectan cuando envían mensajes o se actualiza su estado en el grupo.\n\n📢 Equipo de Administración Entre Hijos');
       return;
     }
 
     // Enviar mensaje inicial con barra de progreso
     const progressMessage = await bot.sendMessage(chatId, `🔍 Iniciando búsqueda de usuarios sin foto de perfil pública o @username...\n` +
-      `ℹ️ Nota: Solo se escanean los administradores debido a limitaciones de la API.\n` +
-      `${generateProgressBar(0, totalAdmins)}\n` +
-      `Usuarios procesados: 0/${totalAdmins}\n\n` +
+      `ℹ️ Nota: Solo se escanean los usuarios detectados (${totalUsers} de ${TOTAL_MEMBERS} miembros).\n` +
+      `${generateProgressBar(0, totalUsers)}\n` +
+      `Usuarios procesados: 0/${totalUsers}\n\n` +
       `📢 Equipo de Administración Entre Hijos`);
 
     const botId = (await bot.getMe()).id;
     let processedMembers = 0;
     let warnedCount = 0;
 
-    // Procesar solo a los administradores
-    for (const member of adminUsers) {
-      if (member.id === botId || member.is_bot) continue;
+    // Procesar los usuarios detectados
+    for (const user of users) {
+      if (user.id === botId || user.is_bot) continue;
 
-      const { hasPublicPhoto, hasUsername } = await checkUserProfile(member, chatId);
+      const { hasPublicPhoto, hasUsername } = await checkUserProfile(user, chatId);
       if (!hasPublicPhoto) {
-        await warnUserInGroup(member, chatId, 'foto de perfil pública');
+        await warnUserInGroup(user, chatId, 'foto de perfil pública');
         warnedCount++;
       } else if (!hasUsername) {
-        await warnUserInGroup(member, chatId, '@username');
+        await warnUserInGroup(user, chatId, '@username');
         warnedCount++;
       }
 
       processedMembers++;
       // Actualizar la barra de progreso cada 10 usuarios o al final
-      if (processedMembers % 10 === 0 || processedMembers === totalAdmins) {
+      if (processedMembers % 10 === 0 || processedMembers === totalUsers) {
         await bot.editMessageText(
           `🔍 Buscando usuarios sin foto de perfil pública o @username...\n` +
-          `ℹ️ Nota: Solo se escanean los administradores debido a limitaciones de la API.\n` +
-          `${generateProgressBar(processedMembers, totalAdmins)}\n` +
-          `Usuarios procesados: ${processedMembers}/${totalAdmins}\n\n` +
+          `ℹ️ Nota: Solo se escanean los usuarios detectados (${totalUsers} de ${TOTAL_MEMBERS} miembros).\n` +
+          `${generateProgressBar(processedMembers, totalUsers)}\n` +
+          `Usuarios procesados: ${processedMembers}/${totalUsers}\n\n` +
           `📢 Equipo de Administración Entre Hijos`,
           { chat_id: chatId, message_id: progressMessage.message_id }
         );
@@ -311,9 +323,9 @@ bot.onText(/\/busqueda/, async (msg) => {
 
     // Mensaje final
     const finalMessage = `✅ Búsqueda completada.\n` +
-      `ℹ️ Nota: Solo se escanearon los administradores debido a limitaciones de la API.\n` +
-      `${generateProgressBar(processedMembers, totalAdmins)}\n` +
-      `Usuarios procesados: ${processedMembers}/${totalAdmins} (de un total de ${TOTAL_MEMBERS} miembros)\n` +
+      `ℹ️ Nota: Solo se escanearon los usuarios detectados (${totalUsers} de ${TOTAL_MEMBERS} miembros).\n` +
+      `${generateProgressBar(processedMembers, totalUsers)}\n` +
+      `Usuarios procesados: ${processedMembers}/${totalUsers}\n` +
       `Se advirtieron a ${warnedCount} usuarios.\n` +
       `Usa /advertidos para ver la lista de advertidos o /limpiar para preparar la expulsión.\n\n` +
       `📢 Equipo de Administración Entre Hijos`;
@@ -510,32 +522,42 @@ bot.onText(/\/logs/, async (msg) => {
   }
 });
 
-// Detectar cambios de @username (similar a SangMata)
+// Detectar usuarios a través de actualizaciones de chat_member
 bot.on('chat_member', async (update) => {
-  const newMember = update.new_chat_member;
-  const oldMember = update.old_chat_member;
   const chatId = update.chat.id;
-
-  if (!newMember || !oldMember) return;
+  if (update.chat.type !== 'group' && update.chat.type !== 'supergroup') return;
 
   // Verificar si el bot es administrador
   if (!(await isBotAdmin(chatId))) return;
 
-  const oldUsername = oldMember.user.username;
-  const newUsername = newMember.user.username;
+  const newMember = update.new_chat_member;
+  const oldMember = update.old_chat_member;
 
-  if (oldUsername !== newUsername && oldUsername && newUsername) {
-    try {
-      await bot.sendMessage(chatId, `🔄 @${oldUsername} ha cambiado su nombre a @${newUsername}\n\n📢 Equipo de Administración Entre Hijos`);
-      logAction('cambio_username', { oldUsername, newUsername, chatId });
-      console.log(`📩 Cambio de @username detectado: @${oldUsername} a @${newUsername}`);
-    } catch (error) {
-      console.error(`❌ Error al notificar cambio de @username: ${error.message}`);
+  if (newMember && newMember.user) {
+    addKnownUser(chatId, newMember.user);
+  }
+  if (oldMember && oldMember.user) {
+    addKnownUser(chatId, oldMember.user);
+  }
+
+  // Detectar cambios de @username
+  if (newMember && oldMember) {
+    const oldUsername = oldMember.user.username;
+    const newUsername = newMember.user.username;
+
+    if (oldUsername !== newUsername && oldUsername && newUsername) {
+      try {
+        await bot.sendMessage(chatId, `🔄 @${oldUsername} ha cambiado su nombre a @${newUsername}\n\n📢 Equipo de Administración Entre Hijos`);
+        logAction('cambio_username', { oldUsername, newUsername, chatId });
+        console.log(`📩 Cambio de @username detectado: @${oldUsername} a @${newUsername}`);
+      } catch (error) {
+        console.error(`❌ Error al notificar cambio de @username: ${error.message}`);
+      }
     }
   }
 });
 
-// Restringir mensajes de usuarios sin foto de perfil pública o @username
+// Detectar usuarios a través de mensajes y restringir mensajes de usuarios sin foto de perfil pública o @username
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
@@ -543,6 +565,9 @@ bot.on('message', async (msg) => {
 
   // Verificar si el bot es administrador
   if (!(await isBotAdmin(chatId))) return;
+
+  // Añadir usuario a la lista de conocidos
+  addKnownUser(chatId, msg.from);
 
   if (msg.text && msg.text.startsWith('/')) return; // Permitir comandos
 
