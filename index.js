@@ -11,8 +11,8 @@ const bot = new TelegramBot(token);
 const app = express();
 const port = process.env.PORT || 10000;
 
-// URL base de yaske.ru (ajustable si hay una subpágina específica)
-const YASKE_URL = 'https://yaske.ru/'; // Cambiar a la URL de listado si es diferente
+// URL base de repelisplus.lat
+const REPELIS_URL = 'https://repelisplus.lat';
 
 // Middleware para parsear JSON
 app.use(express.json());
@@ -35,7 +35,7 @@ app.get('/play', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Yaske Reproductor</title>
+      <title>Reproductor RepelisPlus</title>
       <style>
         body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; }
         iframe { width: 100%; max-width: 800px; height: 450px; border: none; }
@@ -58,10 +58,10 @@ app.listen(port, () => {
     .catch(err => console.error(`❌ Error al configurar webhook: ${err.message}`));
 });
 
-// Función para extraer películas de yaske.ru
+// Función para extraer películas de la página principal
 async function fetchMovies() {
   try {
-    const { data } = await axios.get(YASKE_URL, {
+    const { data } = await axios.get(REPELIS_URL, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
       },
@@ -70,14 +70,13 @@ async function fetchMovies() {
     const $ = cheerio.load(data);
     const movies = [];
 
-    // Ajusta este selector según la estructura real de yaske.ru
-    $('div.movie-item').each((i, element) => {
+    $('article.item').each((i, element) => {
       const title = $(element).find('.title').text().trim() || 'Película sin título';
       const link = $(element).find('a').attr('href');
       if (title && link) {
         movies.push({
           title,
-          link: link.startsWith('http') ? link : `${YASKE_URL}${link}`,
+          link: link.startsWith('http') ? link : `${REPELIS_URL}${link}`,
         });
       }
     });
@@ -86,6 +85,34 @@ async function fetchMovies() {
     return movies;
   } catch (error) {
     console.error(`❌ Error al extraer películas: ${error.message}`);
+    return [];
+  }
+}
+
+// Función para extraer reproductores de una película
+async function fetchPlayers(movieUrl) {
+  try {
+    const { data } = await axios.get(movieUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+      },
+      timeout: 10000,
+    });
+    const $ = cheerio.load(data);
+    const players = [];
+
+    $('ul.list-server li').each((i, element) => {
+      const name = $(element).text().trim() || `Reproductor ${i + 1}`;
+      const link = $(element).attr('data-url') || $(element).find('iframe').attr('src');
+      if (link) {
+        players.push({ name, link });
+      }
+    });
+
+    console.log(`✅ Reproductores extraídos: ${players.length}`);
+    return players;
+  } catch (error) {
+    console.error(`❌ Error al extraer reproductores: ${error.message}`);
     return [];
   }
 }
@@ -105,7 +132,7 @@ async function sendMainMenu(chatId) {
   const movies = await fetchMovies();
 
   if (movies.length === 0) {
-    await bot.sendMessage(chatId, '⚠️ No se pudieron cargar películas de yaske.ru. Intenta más tarde.');
+    await bot.sendMessage(chatId, '⚠️ No se pudieron cargar películas de repelisplus.lat. Intenta más tarde.');
     return;
   }
 
@@ -122,7 +149,7 @@ async function sendMainMenu(chatId) {
       ],
     },
   };
-  await bot.sendMessage(chatId, '🎬 Bienvenido al Bot de Películas Yaske\nSelecciona una película reciente:', options);
+  await bot.sendMessage(chatId, '🎬 Bienvenido al Bot de Películas RepelisPlus\nSelecciona una película reciente:', options);
 
   bot.tempMovies = movies;
 }
@@ -151,6 +178,30 @@ async function sendSearchResults(chatId, query) {
   await bot.sendMessage(chatId, `🎬 Resultados para "${query}":`, options);
 }
 
+// Mostrar opciones de reproductores
+async function sendPlayerOptions(chatId, movie) {
+  const players = await fetchPlayers(movie.link);
+  if (players.length === 0) {
+    await bot.sendMessage(chatId, `⚠️ No se encontraron reproductores para "${movie.title}".`);
+    return;
+  }
+
+  const webhookUrl = process.env.WEBHOOK_URL || 'https://entrelinks.onrender.com';
+  const keyboard = players.map((player, index) => [
+    { text: player.name, url: `${webhookUrl}/play?url=${encodeURIComponent(player.link)}` },
+  ]);
+
+  const options = {
+    reply_markup: {
+      inline_keyboard: [
+        ...keyboard,
+        [{ text: '🔙 Retroceder', callback_data: 'back_to_menu' }],
+      ],
+    },
+  };
+  await bot.sendMessage(chatId, `🎬 Elige un reproductor para "${movie.title}":`, options);
+}
+
 // Comando /start
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
@@ -172,11 +223,11 @@ bot.onText(/\/test/, (msg) => {
   bot.sendMessage(chatId, '✅ ¡El bot está vivo!');
 });
 
-// Comando /search
-bot.onText(/\/search (.+)/, (msg, match) => {
+// Comando /buscar
+bot.onText(/\/buscar (.+)/, (msg, match) => {
   const chatId = msg.chat.id;
   const query = match[1];
-  console.log(`📩 Comando /search recibido de ${chatId}: ${query}`);
+  console.log(`📩 Comando /buscar recibido de ${chatId}: ${query}`);
   sendSearchResults(chatId, query);
 });
 
@@ -184,7 +235,6 @@ bot.onText(/\/search (.+)/, (msg, match) => {
 bot.on('callback_query', async (callbackQuery) => {
   const chatId = callbackQuery.message.chat.id;
   const data = callbackQuery.data;
-  const webhookUrl = process.env.WEBHOOK_URL || 'https://entrelinks.onrender.com';
 
   console.log(`📩 Callback recibido: ${data}`);
   await bot.answerCallbackQuery(callbackQuery.id);
@@ -193,24 +243,15 @@ bot.on('callback_query', async (callbackQuery) => {
     const index = parseInt(data.split('_')[1]);
     const movie = bot.tempMovies[index];
     if (movie) {
-      const playUrl = `${webhookUrl}/play?url=${encodeURIComponent(movie.link)}`;
-      const options = {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '▶️ Reproducir', url: playUrl }],
-            [{ text: '🔙 Retroceder', callback_data: 'back_to_menu' }],
-          ],
-        },
-      };
-      await bot.sendMessage(chatId, `🎬 ${movie.title}\nHaz clic para reproducir:`, options);
+      await sendPlayerOptions(chatId, movie);
     }
   } else if (data === 'search') {
-    await bot.sendMessage(chatId, '🔍 Escribe /search <nombre de la película> para buscar.');
+    await bot.sendMessage(chatId, '🔍 Escribe /buscar <nombre de la película> para buscar.');
   } else if (data === 'back_to_menu') {
     await sendMainMenu(chatId);
   } else if (data === 'help') {
-    await bot.sendMessage(chatId, 'ℹ️ Usa este bot para ver películas de yaske.ru:\n- /start o /menu: Ver películas recientes.\n- /search <nombre>: Buscar una película.\n- /test: Verificar estado.');
+    await bot.sendMessage(chatId, 'ℹ️ Usa este bot para ver películas de repelisplus.lat:\n- /start o /menu: Ver películas recientes.\n- /buscar <nombre>: Buscar una película.\n- /test: Verificar estado.');
   }
 });
 
-console.log('🚀 Bot de Películas Yaske iniciado correctamente 🎉');
+console.log('🚀 Bot de Películas RepelisPlus iniciado correctamente 🎉');

@@ -1,7 +1,7 @@
 {
-  "name": "yaske-movie-bot",
+  "name": "repelisplus-movie-bot",
   "version": "1.0.0",
-  "description": "Bot de Telegram para ver películas desde yaske.ru",
+  "description": "Bot de Telegram para ver películas desde repelisplus.lat",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
