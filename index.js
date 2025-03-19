@@ -1,6 +1,4 @@
 const TelegramBot = require('node-telegram-bot-api');
-const axios = require('axios');
-const cheerio = require('cheerio');
 const express = require('express');
 
 // Token del bot
@@ -17,8 +15,8 @@ app.use(express.json());
 // Configuración del webhook
 const webhookUrl = 'https://entrelinks.onrender.com';
 
-// Almacenar los canales en memoria
-let channelsByCategory = {};
+// Almacenar usuarios advertidos en memoria
+let warnedUsers = {};
 
 // Ruta para el webhook
 app.post(`/bot${token}`, (req, res) => {
@@ -31,70 +29,6 @@ app.post(`/bot${token}`, (req, res) => {
 app.get('/', (req, res) => {
   res.send('Bot is running');
 });
-
-// Función para cargar y organizar los canales desde teledirecto.es
-async function loadChannels() {
-  try {
-    console.log('Intentando cargar canales desde: https://www.teledirecto.es/');
-    const { data } = await axios.get('https://www.teledirecto.es/', { timeout: 15000 });
-    const $ = cheerio.load(data);
-
-    channelsByCategory = {
-      espanoles: [],
-      internacionales: [],
-      deportes: [],
-      infantiles: [],
-      noticias: [],
-      entretenimiento: [],
-    };
-
-    // Extraer los canales de las secciones relevantes
-    $('a[href*="/directo/"]').each((index, element) => {
-      const title = $(element).text().trim();
-      const link = $(element).attr('href');
-      if (!link || !title) return;
-
-      const fullLink = link.startsWith('http') ? link : `https://www.teledirecto.es${link}`;
-
-      const channel = { title, link: fullLink };
-
-      // Clasificar los canales por categoría según el título o la sección
-      if (title.toLowerCase().includes('deporte') || link.toLowerCase().includes('deporte')) {
-        channelsByCategory.deportes.push(channel);
-      } else if (title.toLowerCase().includes('infantil') || link.toLowerCase().includes('infantil')) {
-        channelsByCategory.infantiles.push(channel);
-      } else if (title.toLowerCase().includes('noticias') || link.toLowerCase().includes('noticias')) {
-        channelsByCategory.noticias.push(channel);
-      } else if (title.toLowerCase().includes('entretenimiento') || link.toLowerCase().includes('entretenimiento')) {
-        channelsByCategory.entretenimiento.push(channel);
-      } else if (
-        title.toLowerCase().includes('france') ||
-        title.toLowerCase().includes('italia') ||
-        title.toLowerCase().includes('germany') ||
-        title.toLowerCase().includes('japan') ||
-        link.toLowerCase().includes('international')
-      ) {
-        channelsByCategory.internacionales.push(channel);
-      } else {
-        channelsByCategory.espanoles.push(channel); // Por defecto, asumimos que son canales españoles
-      }
-    });
-
-    // Log de los canales cargados
-    console.log(`✅ Canales cargados:`);
-    console.log(`Españoles: ${channelsByCategory.espanoles.length}`);
-    console.log(`Internacionales: ${channelsByCategory.internacionales.length}`);
-    console.log(`Deportes: ${channelsByCategory.deportes.length}`);
-    console.log(`Infantiles: ${channelsByCategory.infantiles.length}`);
-    console.log(`Noticias: ${channelsByCategory.noticias.length}`);
-    console.log(`Entretenimiento: ${channelsByCategory.entretenimiento.length}`);
-  } catch (error) {
-    console.error(`❌ Error al cargar canales: ${error.message}`);
-  }
-}
-
-// Cargar los canales al iniciar el bot
-loadChannels();
 
 // Iniciar el servidor
 app.listen(port, async () => {
@@ -121,152 +55,192 @@ async function setWebhookWithRetry() {
   }
 }
 
-// Menú principal con categorías
-async function sendMainMenu(chatId) {
-  console.log(`📤 Enviando menú principal a ${chatId}`);
-  if (Object.keys(channelsByCategory).every(category => channelsByCategory[category].length === 0)) {
-    await bot.sendMessage(chatId, '⚠️ No se pudieron cargar los canales. Intenta de nuevo más tarde.');
+// Verificar si el usuario tiene foto de perfil pública y @username
+async function checkUserProfile(user, chatId) {
+  let hasPublicPhoto = true;
+  let hasUsername = !!user.username;
+
+  try {
+    const photos = await bot.getUserProfilePhotos(user.id);
+    hasPublicPhoto = photos.total_count > 0;
+  } catch (error) {
+    console.error(`❌ Error al verificar foto de perfil de ${user.id}: ${error.message}`);
+    hasPublicPhoto = false; // Asumimos que no tiene foto pública si hay un error
+  }
+
+  return { hasPublicPhoto, hasUsername };
+}
+
+// Función para enviar advertencia a un usuario
+async function warnUser(user, chatId, reason) {
+  const username = user.username ? `@${user.username}` : user.first_name;
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = tomorrow.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' });
+
+  const message = `⚠️ Hola ${username},\n\n` +
+    `Hemos detectado que no tienes ${reason}. Por favor, configúralo antes del ${tomorrowStr}, ` +
+    `o serás expulsado del grupo.\n\n` +
+    `📢 Equipo de Administración Entre Hijos`;
+
+  try {
+    await bot.sendMessage(user.id, message);
+    warnedUsers[user.id] = { username: user.username || user.first_name, reason, warnedAt: new Date() };
+    console.log(`📩 Advertencia enviada a ${username} por: ${reason}`);
+  } catch (error) {
+    console.error(`❌ Error al enviar advertencia a ${user.id}: ${error.message}`);
+    await bot.sendMessage(chatId, `❌ No pude enviar un mensaje privado a ${username}. Por favor, asegúrate de que el usuario permita mensajes privados.`);
+  }
+}
+
+// Comando /busqueda: Escanear el grupo y advertir a los usuarios
+bot.onText(/\/busqueda/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.');
     return;
   }
 
-  const keyboard = [];
-  if (channelsByCategory.espanoles.length > 0) {
-    keyboard.push([{ text: 'Españoles', callback_data: 'category_espanoles' }]);
-  }
-  if (channelsByCategory.internacionales.length > 0) {
-    keyboard.push([{ text: 'Internacionales', callback_data: 'category_internacionales' }]);
-  }
-  if (channelsByCategory.deportes.length > 0) {
-    keyboard.push([{ text: 'Deportes', callback_data: 'category_deportes' }]);
-  }
-  if (channelsByCategory.infantiles.length > 0) {
-    keyboard.push([{ text: 'Infantiles', callback_data: 'category_infantiles' }]);
-  }
-  if (channelsByCategory.noticias.length > 0) {
-    keyboard.push([{ text: 'Noticias', callback_data: 'category_noticias' }]);
-  }
-  if (channelsByCategory.entretenimiento.length > 0) {
-    keyboard.push([{ text: 'Entretenimiento', callback_data: 'category_entretenimiento' }]);
-  }
-  keyboard.push([{ text: '🔍 Buscar', callback_data: 'search' }]);
-  keyboard.push([{ text: 'ℹ️ Ayuda', callback_data: 'help' }]);
+  try {
+    await bot.sendMessage(chatId, '🔍 Iniciando búsqueda de usuarios sin foto de perfil pública o @username...');
+    const members = await bot.getChatAdministrators(chatId);
+    const botId = (await bot.getMe()).id;
+    const allMembers = await bot.getChatMembersCount(chatId);
+    let checkedMembers = 0;
 
-  const options = {
-    reply_markup: {
-      inline_keyboard: keyboard,
-    },
-  };
-  await bot.sendMessage(chatId, '📺 Bienvenido al Bot de Canales en Directo\nElige una categoría:', options);
-}
+    // Obtener todos los miembros del grupo (esto puede requerir iterar si el grupo es muy grande)
+    const chatMembers = await bot.getChat(chatId);
+    const memberPromises = [];
+    let offset = 0;
+    const limit = 200; // Límite de miembros por solicitud
 
-// Mostrar canales de una categoría
-async function sendCategoryChannels(chatId, category) {
-  const channels = channelsByCategory[category];
-
-  if (!channels || channels.length === 0) {
-    await bot.sendMessage(chatId, `⚠️ No hay canales en la categoría "${category}".`);
-    return;
-  }
-
-  const keyboard = channels.slice(0, 20).map((channel, index) => [
-    { text: channel.title, callback_data: `channel_${category}_${index}` },
-  ]);
-
-  const options = {
-    reply_markup: {
-      inline_keyboard: [
-        ...keyboard,
-        [{ text: '🔙 Volver', callback_data: 'back_to_menu' }],
-      ],
-    },
-  };
-  await bot.sendMessage(chatId, `📋 Canales en "${category}":`, options);
-}
-
-// Mostrar resultados de búsqueda
-async function sendSearchResults(chatId, query) {
-  const results = [];
-  for (const category in channelsByCategory) {
-    const channels = channelsByCategory[category];
-    channels.forEach((channel, index) => {
-      if (channel.title.toLowerCase().includes(query.toLowerCase())) {
-        results.push({ category, index, title: channel.title, link: channel.link });
-      }
-    });
-  }
-
-  if (results.length === 0) {
-    await bot.sendMessage(chatId, `⚠️ No se encontraron resultados para "${query}".`);
-    return;
-  }
-
-  const keyboard = results.slice(0, 20).map(result => [
-    { text: result.title, callback_data: `channel_${result.category}_${result.index}` },
-  ]);
-
-  const options = {
-    reply_markup: {
-      inline_keyboard: [
-        ...keyboard,
-        [{ text: '🔙 Volver', callback_data: 'back_to_menu' }],
-      ],
-    },
-  };
-  await bot.sendMessage(chatId, `🔍 Resultados para "${query}":`, options);
-}
-
-// Comando /start
-bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
-  console.log(`📩 Comando /start recibido de ${chatId}`);
-  sendMainMenu(chatId);
-});
-
-// Comando /menu
-bot.onText(/\/menu/, (msg) => {
-  const chatId = msg.chat.id;
-  console.log(`📩 Comando /menu recibido de ${chatId}`);
-  sendMainMenu(chatId);
-});
-
-// Comando /buscar
-bot.onText(/\/buscar (.+)/, (msg, match) => {
-  const chatId = msg.chat.id;
-  const query = match[1];
-  console.log(`📩 Comando /buscar recibido de ${chatId}: ${query}`);
-  sendSearchResults(chatId, query);
-});
-
-// Manejar callbacks de los botones
-bot.on('callback_query', async (callbackQuery) => {
-  const chatId = callbackQuery.message.chat.id;
-  const data = callbackQuery.data;
-
-  console.log(`📩 Callback recibido: ${data}`);
-  await bot.answerCallbackQuery(callbackQuery.id);
-
-  if (data.startsWith('category_')) {
-    const category = data.replace('category_', '');
-    await sendCategoryChannels(chatId, category);
-  } else if (data.startsWith('channel_')) {
-    const [_, category, index] = data.split('_');
-    const channel = channelsByCategory[category][parseInt(index)];
-    if (channel) {
-      const options = {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔙 Volver', callback_data: `category_${category}` }],
-          ],
-        },
-      };
-      await bot.sendMessage(chatId, `📺 ${channel.title}\nReproduce aquí:\n${channel.link}`, options);
+    while (checkedMembers < allMembers) {
+      memberPromises.push(
+        bot.getChatMembers(chatId, { offset, limit }).catch(err => {
+          console.error(`❌ Error al obtener miembros: ${err.message}`);
+          return [];
+        })
+      );
+      offset += limit;
+      checkedMembers += limit;
     }
-  } else if (data === 'search') {
-    await bot.sendMessage(chatId, '🔍 Usa /buscar <nombre> para encontrar un canal.');
-  } else if (data === 'back_to_menu') {
-    await sendMainMenu(chatId);
-  } else if (data === 'help') {
-    await bot.sendMessage(chatId, 'ℹ️ Instrucciones:\n- /start o /menu: Ver categorías.\n- /buscar <nombre>: Buscar canales.\n- Usa los botones para navegar.');
+
+    const membersList = (await Promise.all(memberPromises)).flat().map(member => member.user);
+    const uniqueMembers = membersList.filter(
+      (member, index, self) => index === self.findIndex(m => m.id === member.id) && member.id !== botId
+    );
+
+    let warnedCount = 0;
+    for (const member of uniqueMembers) {
+      if (member.is_bot) continue;
+
+      const { hasPublicPhoto, hasUsername } = await checkUserProfile(member, chatId);
+      if (!hasPublicPhoto) {
+        await warnUser(member, chatId, 'foto de perfil pública');
+        warnedCount++;
+      } else if (!hasUsername) {
+        await warnUser(member, chatId, '@username');
+        warnedCount++;
+      }
+    }
+
+    await bot.sendMessage(chatId, `✅ Búsqueda completada. Se advirtieron a ${warnedCount} usuarios.\n` +
+      `Usa /advertidos para ver la lista de advertidos o /limpiar para preparar la expulsión.`);
+  } catch (error) {
+    console.error(`❌ Error en /busqueda: ${error.message}`);
+    await bot.sendMessage(chatId, '❌ Ocurrió un error al realizar la búsqueda. Intenta de nuevo más tarde.');
+  }
+});
+
+// Comando /limpiar: Generar mensajes de expulsión
+bot.onText(/\/limpiar/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.');
+    return;
+  }
+
+  if (Object.keys(warnedUsers).length === 0) {
+    await bot.sendMessage(chatId, 'ℹ️ No hay usuarios advertidos para limpiar.');
+    return;
+  }
+
+  await bot.sendMessage(chatId, '📋 Generando mensajes de expulsión...');
+  for (const userId in warnedUsers) {
+    const user = warnedUsers[userId];
+    const reason = user.reason === 'foto de perfil pública' ? 'falta foto de perfil pública' : 'falta @username';
+    const message = `/kick @${user.username} (Motivo: ${reason})`;
+    await bot.sendMessage(chatId, message);
+  }
+
+  // Limpiar la lista de advertidos después de generar los mensajes
+  warnedUsers = {};
+  await bot.sendMessage(chatId, '✅ Mensajes de expulsión generados. La lista de advertidos ha sido limpiada.');
+});
+
+// Comando /advertidos: Mostrar lista de usuarios advertidos
+bot.onText(/\/advertidos/, async (msg) => {
+  const chatId = msg.chat.id;
+  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.');
+    return;
+  }
+
+  if (Object.keys(warnedUsers).length === 0) {
+    await bot.sendMessage(chatId, 'ℹ️ No hay usuarios advertidos actualmente.');
+    return;
+  }
+
+  let message = '📜 Lista de usuarios advertidos:\n\n';
+  for (const userId in warnedUsers) {
+    const user = warnedUsers[userId];
+    const warnedAt = new Date(user.warnedAt).toLocaleString('es-ES');
+    message += `👤 ${user.username}\n` +
+      `   Motivo: falta ${user.reason}\n` +
+      `   Advertido el: ${warnedAt}\n\n`;
+  }
+  message += '📢 Equipo de Administración Entre Hijos';
+
+  await bot.sendMessage(chatId, message);
+});
+
+// Detectar cambios de @username (similar a SangMata)
+bot.on('message', async (msg) => {
+  if (msg.new_chat_member || msg.chat_member) {
+    const user = msg.new_chat_member || msg.chat_member?.user;
+    if (!user) return;
+
+    const oldUsername = msg.old_chat_member?.user?.username;
+    const newUsername = user.username;
+
+    if (oldUsername !== newUsername && oldUsername && newUsername) {
+      const chatId = msg.chat.id;
+      await bot.sendMessage(chatId, `🔄 @${oldUsername} ha cambiado su nombre a @${newUsername}`);
+    }
+  }
+});
+
+// Restringir mensajes de usuarios sin foto de perfil pública o @username
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
+  if (msg.from.is_bot) return;
+
+  const { hasPublicPhoto, hasUsername } = await checkUserProfile(msg.from, chatId);
+  if (!hasPublicPhoto || !hasUsername) {
+    const username = hasUsername ? `@${msg.from.username}` : msg.from.first_name;
+    const reason = !hasPublicPhoto ? 'foto de perfil pública' : '@username';
+
+    // Eliminar el mensaje del usuario
+    try {
+      await bot.deleteMessage(chatId, msg.message_id);
+    } catch (error) {
+      console.error(`❌ Error al eliminar mensaje de ${username}: ${error.message}`);
+    }
+
+    // Enviar advertencia en el grupo
+    await bot.sendMessage(chatId, `🚫 ${username}, por favor configura tu ${reason} para poder hablar en el grupo.\n` +
+      `📢 Equipo de Administración Entre Hijos`);
   }
 });
 

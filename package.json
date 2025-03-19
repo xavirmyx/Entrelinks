@@ -1,15 +1,13 @@
 {
   "name": "entrelinks-bot",
   "version": "1.0.0",
-  "description": "Bot de Telegram para canales en directo",
+  "description": "Bot de moderación para grupos de Telegram",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.66.0",
-    "axios": "^1.7.7",
-    "express": "^4.19.2",
-    "cheerio": "^1.0.0-rc.12"
+    "express": "^4.19.2"
   }
 }
