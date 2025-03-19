@@ -1,7 +1,7 @@
 {
   "name": "entrelinks-bot",
   "version": "1.0.0",
-  "description": "Bot de Telegram para listas de deportes y películas",
+  "description": "Bot de Telegram para listas M3U",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
