@@ -17,9 +17,9 @@ app.use(express.json());
 // Configuración del webhook
 const webhookUrl = 'https://entrelinks.onrender.com';
 
-// Almacenar usuarios advertidos en memoria
-let warnedUsers = {};
-let reminderActive = false;
+// Almacenar datos por grupo
+let warnedUsers = {}; // { chatId: { userId: { username, reason, warnedAt, warningCount } } }
+let reminderActive = {}; // { chatId: true/false }
 const logsFile = 'bot_logs.json';
 
 // Inicializar el archivo de logs si no existe
@@ -88,6 +88,18 @@ async function checkUserProfile(user, chatId) {
   return { hasPublicPhoto, hasUsername };
 }
 
+// Verificar si el bot es administrador del grupo
+async function isBotAdmin(chatId) {
+  try {
+    const admins = await bot.getChatAdministrators(chatId);
+    const botId = (await bot.getMe()).id;
+    return admins.some(admin => admin.user.id === botId);
+  } catch (error) {
+    console.error(`❌ Error al verificar si el bot es administrador en ${chatId}: ${error.message}`);
+    return false;
+  }
+}
+
 // Función para enviar advertencia a un usuario en el grupo
 async function warnUserInGroup(user, chatId, reason) {
   const username = user.username ? `@${user.username}` : user.first_name;
@@ -96,30 +108,33 @@ async function warnUserInGroup(user, chatId, reason) {
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowStr = tomorrow.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' });
 
+  // Inicializar warnedUsers para el grupo si no existe
+  if (!warnedUsers[chatId]) warnedUsers[chatId] = {};
+
   // Incrementar el conteo de advertencias
-  if (!warnedUsers[user.id]) {
-    warnedUsers[user.id] = { username: user.username || user.first_name, reason, warnedAt: new Date(), warningCount: 0 };
+  if (!warnedUsers[chatId][userId]) {
+    warnedUsers[chatId][userId] = { username: user.username || user.first_name, reason, warnedAt: new Date(), warningCount: 0, chatId };
   }
-  warnedUsers[user.id].warningCount += 1;
-  warnedUsers[user.id].reason = reason; // Actualizar el motivo
-  warnedUsers[user.id].warnedAt = new Date(); // Actualizar la fecha de advertencia
+  warnedUsers[chatId][userId].warningCount += 1;
+  warnedUsers[chatId][userId].reason = reason; // Actualizar el motivo
+  warnedUsers[chatId][userId].warnedAt = new Date(); // Actualizar la fecha de advertencia
 
   const message = `⚠️ ${username} (ID: ${userId}),\n` +
     `No tienes ${reason}. Por favor, configúralo antes del ${tomorrowStr}, ` +
     `o serás expulsado del grupo.\n` +
-    `📊 Advertencias: ${warnedUsers[user.id].warningCount}/3\n\n` +
+    `📊 Advertencias: ${warnedUsers[chatId][userId].warningCount}/3\n\n` +
     `📢 Equipo de Administración Entre Hijos`;
 
   try {
     await bot.sendMessage(chatId, message);
-    logAction('advertencia', { userId, username, reason, warningCount: warnedUsers[user.id].warningCount });
+    logAction('advertencia', { userId, username, reason, warningCount: warnedUsers[chatId][userId].warningCount, chatId });
 
     // Si el usuario alcanza 3 advertencias, generar mensaje de expulsión
-    if (warnedUsers[user.id].warningCount >= 3) {
+    if (warnedUsers[chatId][userId].warningCount >= 3) {
       const kickMessage = `/kick @${username} (Motivo: ${reason}, 3 advertencias alcanzadas)`;
       await bot.sendMessage(chatId, kickMessage);
-      logAction('expulsion', { userId, username, reason, warningCount: warnedUsers[user.id].warningCount });
-      delete warnedUsers[user.id]; // Eliminar al usuario de la lista de advertidos
+      logAction('expulsion', { userId, username, reason, warningCount: warnedUsers[chatId][userId].warningCount, chatId });
+      delete warnedUsers[chatId][userId]; // Eliminar al usuario de la lista de advertidos
     }
   } catch (error) {
     console.error(`❌ Error al enviar advertencia en el grupo para ${user.id}: ${error.message}`);
@@ -137,6 +152,17 @@ function generateProgressBar(progress, total) {
 // Comando /m1: Mostrar lista de comandos
 bot.onText(/\/m1/, async (msg) => {
   const chatId = msg.chat.id;
+  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.\n\n📢 Equipo de Administración Entre Hijos');
+    return;
+  }
+
+  // Verificar si el bot es administrador
+  if (!(await isBotAdmin(chatId))) {
+    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
+    return;
+  }
+
   const commandsList = `📋 **Lista de Comandos - Equipo de Administración Entre Hijos** 📋\n\n` +
     `🔍 **/busqueda**\n` +
     `   Escanea el grupo y detecta usuarios sin foto de perfil pública o @username. Envía una advertencia en el grupo a cada usuario detectado.\n\n` +
@@ -164,7 +190,13 @@ bot.onText(/\/m1/, async (msg) => {
 bot.onText(/\/detalles/, async (msg) => {
   const chatId = msg.chat.id;
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
-    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.');
+    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.\n\n📢 Equipo de Administración Entre Hijos');
+    return;
+  }
+
+  // Verificar si el bot es administrador
+  if (!(await isBotAdmin(chatId))) {
+    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
     return;
   }
 
@@ -205,6 +237,12 @@ bot.onText(/\/busqueda/, async (msg) => {
   const chatId = msg.chat.id;
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
     await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.\n\n📢 Equipo de Administración Entre Hijos');
+    return;
+  }
+
+  // Verificar si el bot es administrador
+  if (!(await isBotAdmin(chatId))) {
+    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
     return;
   }
 
@@ -286,24 +324,30 @@ bot.onText(/\/limpiar/, async (msg) => {
     return;
   }
 
-  if (Object.keys(warnedUsers).length === 0) {
+  // Verificar si el bot es administrador
+  if (!(await isBotAdmin(chatId))) {
+    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
+    return;
+  }
+
+  if (!warnedUsers[chatId] || Object.keys(warnedUsers[chatId]).length === 0) {
     await bot.sendMessage(chatId, 'ℹ️ No hay usuarios advertidos para limpiar.\n\n📢 Equipo de Administración Entre Hijos');
     return;
   }
 
   await bot.sendMessage(chatId, '📋 Generando mensajes de expulsión...\n\n📢 Equipo de Administración Entre Hijos');
-  for (const userId in warnedUsers) {
-    const user = warnedUsers[userId];
+  for (const userId in warnedUsers[chatId]) {
+    const user = warnedUsers[chatId][userId];
     const reason = user.reason === 'foto de perfil pública' ? 'falta foto de perfil pública' : 'falta @username';
     const message = `/kick @${user.username} (Motivo: ${reason})`;
     await bot.sendMessage(chatId, message);
-    logAction('expulsion_manual', { userId, username: user.username, reason });
+    logAction('expulsion_manual', { userId, username: user.username, reason, chatId });
     // Pequeña pausa para evitar límites de la API
     await new Promise(resolve => setTimeout(resolve, 50));
   }
 
   // Limpiar la lista de advertidos después de generar los mensajes
-  warnedUsers = {};
+  warnedUsers[chatId] = {};
   await bot.sendMessage(chatId, '✅ Mensajes de expulsión generados. La lista de advertidos ha sido limpiada.\n\n📢 Equipo de Administración Entre Hijos');
 });
 
@@ -315,14 +359,20 @@ bot.onText(/\/advertidos/, async (msg) => {
     return;
   }
 
-  if (Object.keys(warnedUsers).length === 0) {
+  // Verificar si el bot es administrador
+  if (!(await isBotAdmin(chatId))) {
+    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
+    return;
+  }
+
+  if (!warnedUsers[chatId] || Object.keys(warnedUsers[chatId]).length === 0) {
     await bot.sendMessage(chatId, 'ℹ️ No hay usuarios advertidos actualmente.\n\n📢 Equipo de Administración Entre Hijos');
     return;
   }
 
   let message = '📜 Lista de usuarios advertidos:\n\n';
-  for (const userId in warnedUsers) {
-    const user = warnedUsers[userId];
+  for (const userId in warnedUsers[chatId]) {
+    const user = warnedUsers[chatId][userId];
     const warnedAt = new Date(user.warnedAt).toLocaleString('es-ES');
     message += `👤 ${user.username}\n` +
       `   Motivo: falta ${user.reason}\n` +
@@ -342,6 +392,12 @@ bot.onText(/\/recordatorio/, async (msg) => {
     return;
   }
 
+  // Verificar si el bot es administrador
+  if (!(await isBotAdmin(chatId))) {
+    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
+    return;
+  }
+
   // Verificar si el usuario es administrador
   const admins = await bot.getChatAdministrators(chatId);
   if (!admins.some(admin => admin.user.id === msg.from.id)) {
@@ -349,35 +405,39 @@ bot.onText(/\/recordatorio/, async (msg) => {
     return;
   }
 
-  reminderActive = !reminderActive;
-  const status = reminderActive ? 'activado' : 'desactivado';
+  reminderActive[chatId] = !reminderActive[chatId];
+  const status = reminderActive[chatId] ? 'activado' : 'desactivado';
   await bot.sendMessage(chatId, `⏰ Recordatorio diario ${status}.\n\n📢 Equipo de Administración Entre Hijos`);
   logAction('recordatorio', { status, chatId });
 });
 
 // Programar recordatorio diario con node-cron (a las 9:00 AM todos los días)
 cron.schedule('0 9 * * *', async () => {
-  if (!reminderActive) return;
+  for (const chatId in reminderActive) {
+    if (!reminderActive[chatId]) continue;
 
-  for (const userId in warnedUsers) {
-    const user = warnedUsers[userId];
-    const username = user.username;
-    const reason = user.reason;
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowStr = tomorrow.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' });
+    if (!warnedUsers[chatId]) continue;
 
-    const message = `⏰ Recordatorio, ${username} (ID: ${userId}),\n` +
-      `No tienes ${reason}. Por favor, configúralo antes del ${tomorrowStr}, ` +
-      `o serás expulsado del grupo.\n` +
-      `📊 Advertencias: ${user.warningCount}/3\n\n` +
-      `📢 Equipo de Administración Entre Hijos`;
+    for (const userId in warnedUsers[chatId]) {
+      const user = warnedUsers[chatId][userId];
+      const username = user.username;
+      const reason = user.reason;
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowStr = tomorrow.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' });
 
-    try {
-      await bot.sendMessage(user.chatId || '-1002516061331', message); // Usar chatId del grupo donde se advirtió al usuario
-      logAction('recordatorio_enviado', { userId, username, reason });
-    } catch (error) {
-      console.error(`❌ Error al enviar recordatorio a ${userId}: ${error.message}`);
+      const message = `⏰ Recordatorio, ${username} (ID: ${userId}),\n` +
+        `No tienes ${reason}. Por favor, configúralo antes del ${tomorrowStr}, ` +
+        `o serás expulsado del grupo.\n` +
+        `📊 Advertencias: ${user.warningCount}/3\n\n` +
+        `📢 Equipo de Administración Entre Hijos`;
+
+      try {
+        await bot.sendMessage(chatId, message);
+        logAction('recordatorio_enviado', { userId, username, reason, chatId });
+      } catch (error) {
+        console.error(`❌ Error al enviar recordatorio a ${userId} en ${chatId}: ${error.message}`);
+      }
     }
   }
 });
@@ -387,6 +447,12 @@ bot.onText(/\/logs/, async (msg) => {
   const chatId = msg.chat.id;
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
     await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.\n\n📢 Equipo de Administración Entre Hijos');
+    return;
+  }
+
+  // Verificar si el bot es administrador
+  if (!(await isBotAdmin(chatId))) {
+    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
     return;
   }
 
@@ -423,6 +489,9 @@ bot.on('chat_member', async (update) => {
 
   if (!newMember || !oldMember) return;
 
+  // Verificar si el bot es administrador
+  if (!(await isBotAdmin(chatId))) return;
+
   const oldUsername = oldMember.user.username;
   const newUsername = newMember.user.username;
 
@@ -442,6 +511,10 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
   if (msg.from.is_bot) return;
+
+  // Verificar si el bot es administrador
+  if (!(await isBotAdmin(chatId))) return;
+
   if (msg.text && msg.text.startsWith('/')) return; // Permitir comandos
 
   const { hasPublicPhoto, hasUsername } = await checkUserProfile(msg.from, chatId);
