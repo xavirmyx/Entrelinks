@@ -1,5 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
+const express = require('express');
 
 // Token del bot
 const token = '7861676131:AAFLv4dBIFiHV1OYc8BJH2U8kWPal7lpBMQ';
@@ -8,11 +9,52 @@ const bot = new TelegramBot(token);
 // URL de la lista M3U
 const m3uUrl = 'http://tv.balkanci.net:8080/get.php?username=Kristijan&password=L2QJ4VvC4W&type=m3u_plus';
 
+// Configuración del servidor Express
+const app = express();
+const port = process.env.PORT || 10000; // Render usa process.env.PORT, por defecto 10000
+
+// Middleware para parsear JSON
+app.use(express.json());
+
 // Configuración del webhook
 const webhookUrl = 'https://entrelinks.onrender.com';
-bot.setWebHook(`${webhookUrl}/bot${token}`)
-  .then(() => console.log(`✅ Webhook configurado: ${webhookUrl}/bot${token}`))
-  .catch(err => console.error(`❌ Error al configurar webhook: ${err.message}`));
+
+// Ruta para el webhook
+app.post(`/bot${token}`, (req, res) => {
+  console.log('📩 Recibida actualización de Telegram:', JSON.stringify(req.body));
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
+});
+
+// Ruta para la raíz (/)
+app.get('/', (req, res) => {
+  res.send('Bot is running');
+});
+
+// Iniciar el servidor
+app.listen(port, async () => {
+  console.log(`🚀 Servidor escuchando en el puerto ${port}`);
+
+  // Configurar el webhook
+  await setWebhookWithRetry();
+});
+
+// Función para configurar el webhook con manejo de errores 429
+async function setWebhookWithRetry() {
+  try {
+    console.log(`Configurando webhook: ${webhookUrl}/bot${token}`);
+    await bot.setWebHook(`${webhookUrl}/bot${token}`);
+    console.log(`✅ Webhook configurado: ${webhookUrl}/bot${token}`);
+  } catch (error) {
+    if (error.response && error.response.status === 429) {
+      const retryAfter = error.response.data.parameters.retry_after || 1;
+      console.warn(`⚠️ Error 429 Too Many Requests. Reintentando después de ${retryAfter} segundos...`);
+      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      return setWebhookWithRetry(); // Reintentar
+    }
+    console.error(`❌ Error al configurar webhook: ${error.message}`);
+  }
+}
 
 // Función para extraer contenido de la lista M3U y organizarlo por categorías
 async function fetchContentFromM3U() {
@@ -193,12 +235,6 @@ bot.on('callback_query', async (callbackQuery) => {
   } else if (data === 'help') {
     await bot.sendMessage(chatId, 'ℹ️ Instrucciones:\n- /start o /menu: Ver categorías.\n- /buscar <nombre>: Buscar contenido.\n- Usa los botones para navegar.');
   }
-});
-
-// Mantener el proceso activo para Render (opcional, para depuración)
-process.on('SIGTERM', () => {
-  console.log('Recibida señal SIGTERM. Cerrando el bot...');
-  process.exit(0);
 });
 
 console.log('🚀 Bot iniciado correctamente 🎉');
