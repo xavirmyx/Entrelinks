@@ -39,7 +39,7 @@ function logAction(action, details) {
 
 // Ruta webhook
 app.post(`/bot${token}`, (req, res) => {
-  console.log('📩 Recibida actualización:', JSON.stringify(req.body));
+  logAction('webhook_received', { update: req.body });
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
@@ -56,15 +56,15 @@ app.listen(port, async () => {
 async function setWebhookWithRetry() {
   try {
     await bot.setWebHook(`${webhookUrl}/bot${token}`);
-    console.log(`✅ Webhook configurado`);
+    logAction('webhook_set', { url: `${webhookUrl}/bot${token}` });
   } catch (error) {
+    logAction('webhook_error', { error: error.message, status: error.response?.status });
     if (error.response?.status === 429) {
       const retryAfter = error.response.data.parameters.retry_after || 1;
       console.warn(`⚠️ Error 429. Reintentando en ${retryAfter}s...`);
       await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
       return setWebhookWithRetry();
     }
-    console.error(`❌ Error webhook: ${error.message}`);
   }
 }
 
@@ -236,49 +236,56 @@ bot.on('callback_query', async (query) => {
   const action = query.data;
   const backButton = { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] };
 
-  if (action === 'verificar') {
-    await bot.sendMessage(chatId, `🔍 Ingresa la URL:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy\n\n📢 *Grupos Entre Hijos*`, {
-      message_thread_id: ALLOWED_THREAD_ID,
-      reply_markup: backButton
-    });
-  } else if (action === 'masivo') {
-    await bot.sendMessage(chatId, `📦 Ingresa URLs (separadas por comas):\nEjemplo: url1, url2\n\n📢 *Grupos Entre Hijos*`, {
-      message_thread_id: ALLOWED_THREAD_ID,
-      reply_markup: backButton
-    });
-  } else if (action === 'historial') {
-    if (!userHistory[userId] || userHistory[userId].length === 0) {
-      await bot.sendMessage(chatId, `ℹ️ Sin historial.\n\n📢 *Grupos Entre Hijos*`, { message_thread_id: ALLOWED_THREAD_ID, reply_markup: backButton });
-    } else {
-      const history = userHistory[userId].slice(-5).map(h =>
-        `📡 ${h.url}\nEstado: ${h.result.status}\nCalidad: ${h.result.quality}\n⏰ ${h.timestamp.toLocaleString('es-ES')}\n`
-      ).join('\n');
-      await bot.sendMessage(chatId, `📜 Historial (últimas 5):\n\n${history}\n📢 *Grupos Entre Hijos*`, {
+  try {
+    if (action === 'verificar') {
+      await bot.sendMessage(chatId, `🔍 Ingresa la URL:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy\n\n📢 *Grupos Entre Hijos*`, {
         message_thread_id: ALLOWED_THREAD_ID,
         reply_markup: backButton
       });
+    } else if (action === 'masivo') {
+      await bot.sendMessage(chatId, `📦 Ingresa URLs (separadas por comas):\nEjemplo: url1, url2\n\n📢 *Grupos Entre Hijos*`, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: backButton
+      });
+    } else if (action === 'historial') {
+      if (!userHistory[userId] || userHistory[userId].length === 0) {
+        await bot.sendMessage(chatId, `ℹ️ Sin historial.\n\n📢 *Grupos Entre Hijos*`, { message_thread_id: ALLOWED_THREAD_ID, reply_markup: backButton });
+      } else {
+        const history = userHistory[userId].slice(-5).map(h =>
+          `📡 ${h.url}\nEstado: ${h.result.status}\nCalidad: ${h.result.quality}\n⏰ ${h.timestamp.toLocaleString('es-ES')}\n`
+        ).join('\n');
+        await bot.sendMessage(chatId, `📜 Historial (últimas 5):\n\n${history}\n📢 *Grupos Entre Hijos*`, {
+          message_thread_id: ALLOWED_THREAD_ID,
+          reply_markup: backButton
+        });
+      }
+    } else if (action === 'alerta') {
+      await bot.sendMessage(chatId, `⏰ Ingresa URL y días:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy 3\n\n📢 *Grupos Entre Hijos*`, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: backButton
+      });
+    } else if (action === 'exportar') {
+      await bot.sendMessage(chatId, `📤 Ingresa URL a exportar:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy\n\n📢 *Grupos Entre Hijos*`, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: backButton
+      });
+    } else if (action === 'filtrar') {
+      await bot.sendMessage(chatId, `📺 Ingresa URL y categoría:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy deportes\n\n📢 *Grupos Entre Hijos*`, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: backButton
+      });
+    } else if (action === 'volver') {
+      await bot.editMessageText(`👋 ¡Bienvenido a *EntreCheck_iptv*! 👋\n\nSelecciona una opción:\n\n📢 *Grupos Entre Hijos*`, {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: mainMenu
+      });
     }
-  } else if (action === 'alerta') {
-    await bot.sendMessage(chatId, `⏰ Ingresa URL y días:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy 3\n\n📢 *Grupos Entre Hijos*`, {
-      message_thread_id: ALLOWED_THREAD_ID,
-      reply_markup: backButton
-    });
-  } else if (action === 'exportar') {
-    await bot.sendMessage(chatId, `📤 Ingresa URL a exportar:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy\n\n📢 *Grupos Entre Hijos*`, {
-      message_thread_id: ALLOWED_THREAD_ID,
-      reply_markup: backButton
-    });
-  } else if (action === 'filtrar') {
-    await bot.sendMessage(chatId, `📺 Ingresa URL y categoría:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy deportes\n\n📢 *Grupos Entre Hijos*`, {
-      message_thread_id: ALLOWED_THREAD_ID,
-      reply_markup: backButton
-    });
-  } else if (action === 'volver') {
-    await bot.editMessageText(`👋 ¡Bienvenido a *EntreCheck_iptv*! 👋\n\nSelecciona una opción:\n\n📢 *Grupos Entre Hijos*`, {
-      chat_id: chatId,
-      message_id: query.message.message_id,
-      parse_mode: 'Markdown',
-      reply_markup: mainMenu
+  } catch (error) {
+    logAction('callback_error', { action, error: error.message, userId });
+    await bot.sendMessage(chatId, `❌ Error procesando tu solicitud. Intenta de nuevo.\n\n📢 *Grupos Entre Hijos*`, {
+      message_thread_id: ALLOWED_THREAD_ID
     });
   }
 
@@ -291,125 +298,141 @@ bot.on('message', async (msg) => {
   const threadId = msg.message_thread_id || '0';
   const userId = msg.from.id;
 
-  if (!isAllowedContext(chatId, threadId) || !msg.reply_to_message || msg.text.startsWith('/')) return;
+  if (!isAllowedContext(chatId, threadId) || msg.text.startsWith('/')) return;
 
-  const replyText = msg.reply_to_message.text;
+  const replyToMessage = msg.reply_to_message;
   const backButton = { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] };
 
-  if (replyText.includes('🔍 Ingresa la URL')) {
-    const url = msg.text;
-    const checking = await bot.sendMessage(chatId, `🔍 Verificando ${url}...\n${generateProgressBar(0, 1)}`, { message_thread_id: ALLOWED_THREAD_ID });
-    const result = await checkIPTVList(url);
+  try {
+    // Verificar si es una respuesta a un mensaje del bot
+    if (!replyToMessage || !replyToMessage.from || !replyToMessage.from.is_bot) {
+      logAction('no_reply', { userId, text: msg.text });
+      return;
+    }
 
-    if (!userHistory[userId]) userHistory[userId] = [];
-    userHistory[userId].push({ url, result, timestamp: new Date() });
+    const replyText = replyToMessage.text || '';
+    logAction('processing_message', { userId, text: msg.text, replyText });
 
-    const response = `✅ Resultado:\n\n` +
-      `📡 Tipo: ${result.type}\n` +
-      `Estado: ${result.status}\n` +
-      (result.username ? `👤 Usuario: ${result.username}\n🔑 Contraseña: ${result.password}\n🌐 Servidor: ${result.server}\n` : '') +
-      (result.createdAt ? `📅 Creada: ${result.createdAt}\n⏰ Expira: ${result.expiresAt}\n` : '') +
-      (result.channels ? `📺 Canales: ${result.channels}\n` : '') +
-      (result.categories ? `📋 Categorías: ${result.categories}\n` : '') +
-      (result.maxConnections ? `🔗 Máx.: ${result.maxConnections}\n🔌 Activas: ${result.activeConnections}\n` : '') +
-      `📽 Calidad: ${result.quality}\n` +
-      `📈 Bitrate: ${result.bitrate}\n` +
-      `🛡️ Estabilidad: ${result.stability}\n` +
-      `⚠️ Riesgo: ${result.risk}\n` +
-      (result.error ? `❌ Error: ${result.error}\n` : '') +
-      `\n📢 *Grupos Entre Hijos*`;
-
-    await bot.editMessageText(response, {
-      chat_id: chatId,
-      message_id: checking.message_id,
-      parse_mode: 'Markdown',
-      reply_markup: backButton
-    });
-    logAction('verificar', { userId, url, status: result.status });
-  }
-
-  if (replyText.includes('📦 Ingresa URLs')) {
-    const urls = msg.text.split(',').map(url => url.trim());
-    const total = urls.length;
-    const progress = await bot.sendMessage(chatId, `📦 Verificando ${total} listas...\n${generateProgressBar(0, total)}`, { message_thread_id: ALLOWED_THREAD_ID });
-
-    let processed = 0;
-    let results = [];
-
-    for (const url of urls) {
+    if (replyText.includes('🔍 Ingresa la URL')) {
+      const url = msg.text;
+      const checking = await bot.sendMessage(chatId, `🔍 Verificando ${url}...\n${generateProgressBar(0, 1)}`, { message_thread_id: ALLOWED_THREAD_ID });
       const result = await checkIPTVList(url);
-      results.push({ url, status: result.status, quality: result.quality });
-      processed++;
-      await bot.editMessageText(`📦 Progreso: ${processed}/${total}\n${generateProgressBar(processed, total)}`, {
+
+      if (!userHistory[userId]) userHistory[userId] = [];
+      userHistory[userId].push({ url, result, timestamp: new Date() });
+
+      const response = `✅ Resultado:\n\n` +
+        `📡 Tipo: ${result.type}\n` +
+        `Estado: ${result.status}\n` +
+        (result.username ? `👤 Usuario: ${result.username}\n🔑 Contraseña: ${result.password}\n🌐 Servidor: ${result.server}\n` : '') +
+        (result.createdAt ? `📅 Creada: ${result.createdAt}\n⏰ Expira: ${result.expiresAt}\n` : '') +
+        (result.channels ? `📺 Canales: ${result.channels}\n` : '') +
+        (result.categories ? `📋 Categorías: ${result.categories}\n` : '') +
+        (result.maxConnections ? `🔗 Máx.: ${result.maxConnections}\n🔌 Activas: ${result.activeConnections}\n` : '') +
+        `📽 Calidad: ${result.quality}\n` +
+        `📈 Bitrate: ${result.bitrate}\n` +
+        `🛡️ Estabilidad: ${result.stability}\n` +
+        `⚠️ Riesgo: ${result.risk}\n` +
+        (result.error ? `❌ Error: ${result.error}\n` : '') +
+        `\n📢 *Grupos Entre Hijos*`;
+
+      await bot.editMessageText(response, {
         chat_id: chatId,
-        message_id: progress.message_id
+        message_id: checking.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: backButton
       });
-      await new Promise(resolve => setTimeout(resolve, 50));
+      logAction('verificar', { userId, url, status: result.status });
     }
 
-    if (!userHistory[userId]) userHistory[userId] = [];
-    userHistory[userId].push(...results.map(r => ({ url: r.url, result: { status: r.status, quality: r.quality }, timestamp: new Date() })));
+    if (replyText.includes('📦 Ingresa URLs')) {
+      const urls = msg.text.split(',').map(url => url.trim());
+      const total = urls.length;
+      const progress = await bot.sendMessage(chatId, `📦 Verificando ${total} listas...\n${generateProgressBar(0, total)}`, { message_thread_id: ALLOWED_THREAD_ID });
 
-    const final = `✅ Resultados:\n\n` +
-      results.map(r => `📡 ${r.url}: ${r.status} (${r.quality})`).join('\n') +
-      `\n\n📢 *Grupos Entre Hijos*`;
-    await bot.editMessageText(final, {
-      chat_id: chatId,
-      message_id: progress.message_id,
-      parse_mode: 'Markdown',
-      reply_markup: backButton
+      let processed = 0;
+      let results = [];
+
+      for (const url of urls) {
+        const result = await checkIPTVList(url);
+        results.push({ url, status: result.status, quality: result.quality });
+        processed++;
+        await bot.editMessageText(`📦 Progreso: ${processed}/${total}\n${generateProgressBar(processed, total)}`, {
+          chat_id: chatId,
+          message_id: progress.message_id
+        });
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+
+      if (!userHistory[userId]) userHistory[userId] = [];
+      userHistory[userId].push(...results.map(r => ({ url: r.url, result: { status: r.status, quality: r.quality }, timestamp: new Date() })));
+
+      const final = `✅ Resultados:\n\n` +
+        results.map(r => `📡 ${r.url}: ${r.status} (${r.quality})`).join('\n') +
+        `\n\n📢 *Grupos Entre Hijos*`;
+      await bot.editMessageText(final, {
+        chat_id: chatId,
+        message_id: progress.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: backButton
+      });
+      logAction('masivo', { userId, urls, processed });
+    }
+
+    if (replyText.includes('⏰ Ingresa URL')) {
+      const [url, daysBefore] = msg.text.split(' ');
+      const days = parseInt(daysBefore);
+      const result = await checkIPTVList(url);
+
+      if (result.expiresAt) {
+        alerts[userId] = { url, expiresAt: new Date(result.expiresAt), notifyDaysBefore: days };
+        await bot.sendMessage(chatId, `⏰ Alerta configurada: ${url} (${days} días).\n\n📢 *Grupos Entre Hijos*`, {
+          message_thread_id: ALLOWED_THREAD_ID,
+          reply_markup: backButton
+        });
+        logAction('alerta', { userId, url, daysBefore: days });
+      } else {
+        await bot.sendMessage(chatId, `❌ Sin fecha de expiración.\n\n📢 *Grupos Entre Hijos*`, { message_thread_id: ALLOWED_THREAD_ID, reply_markup: backButton });
+      }
+    }
+
+    if (replyText.includes('📤 Ingresa URL')) {
+      const url = msg.text;
+      const result = await checkIPTVList(url);
+
+      if (result.status === 'Activa' || result.status === 'active') {
+        const exportText = result.type === 'Xtream Codes' ? `${result.server}/get.php?username=${result.username}&password=${result.password}` : url;
+        await bot.sendMessage(chatId, `📤 Exportada:\n${exportText}\nCompatible con VLC, IPTV Smarters, TiviMate.\n\n📢 *Grupos Entre Hijos*`, {
+          message_thread_id: ALLOWED_THREAD_ID,
+          reply_markup: backButton
+        });
+        logAction('exportar', { userId, url });
+      } else {
+        await bot.sendMessage(chatId, `❌ Lista no activa.\n\n📢 *Grupos Entre Hijos*`, { message_thread_id: ALLOWED_THREAD_ID, reply_markup: backButton });
+      }
+    }
+
+    if (replyText.includes('📺 Ingresa URL')) {
+      const [url, category] = msg.text.split(' ');
+      const result = await checkIPTVList(url);
+
+      if (result.type === 'Xtream Codes' && result.status === 'active') {
+        const apiUrl = `${result.server}/player_api.php?username=${result.username}&password=${result.password}&action=get_live_streams`;
+        const streams = (await axios.get(apiUrl, { timeout: 2000 })).data;
+        const filtered = streams.filter(s => s.category_name.toLowerCase().includes(category.toLowerCase()));
+        const filterMessage = `📺 "${category}":\n\n` +
+          filtered.slice(0, 5).map(s => `📡 ${s.name}`).join('\n') +
+          `\nTotal: ${filtered.length}\n\n📢 *Grupos Entre Hijos*`;
+        await bot.sendMessage(chatId, filterMessage, { message_thread_id: ALLOWED_THREAD_ID, reply_markup: backButton });
+      } else {
+        await bot.sendMessage(chatId, `❌ Lista incompatible o inactiva.\n\n📢 *Grupos Entre Hijos*`, { message_thread_id: ALLOWED_THREAD_ID, reply_markup: backButton });
+      }
+    }
+  } catch (error) {
+    logAction('message_error', { userId, text: msg.text, error: error.message });
+    await bot.sendMessage(chatId, `❌ Error: ${error.message}\nIntenta de nuevo.\n\n📢 *Grupos Entre Hijos*`, {
+      message_thread_id: ALLOWED_THREAD_ID
     });
-    logAction('masivo', { userId, urls, processed });
-  }
-
-  if (replyText.includes('⏰ Ingresa URL')) {
-    const [url, daysBefore] = msg.text.split(' ');
-    const days = parseInt(daysBefore);
-    const result = await checkIPTVList(url);
-
-    if (result.expiresAt) {
-      alerts[userId] = { url, expiresAt: new Date(result.expiresAt), notifyDaysBefore: days };
-      await bot.sendMessage(chatId, `⏰ Alerta configurada: ${url} (${days} días).\n\n📢 *Grupos Entre Hijos*`, {
-        message_thread_id: ALLOWED_THREAD_ID,
-        reply_markup: backButton
-      });
-      logAction('alerta', { userId, url, daysBefore: days });
-    } else {
-      await bot.sendMessage(chatId, `❌ Sin fecha de expiración.\n\n📢 *Grupos Entre Hijos*`, { message_thread_id: ALLOWED_THREAD_ID, reply_markup: backButton });
-    }
-  }
-
-  if (replyText.includes('📤 Ingresa URL')) {
-    const url = msg.text;
-    const result = await checkIPTVList(url);
-
-    if (result.status === 'Activa' || result.status === 'active') {
-      const exportText = result.type === 'Xtream Codes' ? `${result.server}/get.php?username=${result.username}&password=${result.password}` : url;
-      await bot.sendMessage(chatId, `📤 Exportada:\n${exportText}\nCompatible con VLC, IPTV Smarters, TiviMate.\n\n📢 *Grupos Entre Hijos*`, {
-        message_thread_id: ALLOWED_THREAD_ID,
-        reply_markup: backButton
-      });
-      logAction('exportar', { userId, url });
-    } else {
-      await bot.sendMessage(chatId, `❌ Lista no activa.\n\n📢 *Grupos Entre Hijos*`, { message_thread_id: ALLOWED_THREAD_ID, reply_markup: backButton });
-    }
-  }
-
-  if (replyText.includes('📺 Ingresa URL')) {
-    const [url, category] = msg.text.split(' ');
-    const result = await checkIPTVList(url);
-
-    if (result.type === 'Xtream Codes' && result.status === 'active') {
-      const apiUrl = `${result.server}/player_api.php?username=${result.username}&password=${result.password}&action=get_live_streams`;
-      const streams = (await axios.get(apiUrl, { timeout: 2000 })).data;
-      const filtered = streams.filter(s => s.category_name.toLowerCase().includes(category.toLowerCase()));
-      const filterMessage = `📺 "${category}":\n\n` +
-        filtered.slice(0, 5).map(s => `📡 ${s.name}`).join('\n') +
-        `\nTotal: ${filtered.length}\n\n📢 *Grupos Entre Hijos*`;
-      await bot.sendMessage(chatId, filterMessage, { message_thread_id: ALLOWED_THREAD_ID, reply_markup: backButton });
-    } else {
-      await bot.sendMessage(chatId, `❌ Lista incompatible o inactiva.\n\n📢 *Grupos Entre Hijos*`, { message_thread_id: ALLOWED_THREAD_ID, reply_markup: backButton });
-    }
   }
 });
 
