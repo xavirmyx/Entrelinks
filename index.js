@@ -41,6 +41,11 @@ function logAction(action, details) {
   console.log(`[${timestamp}] ${action}:`, details);
 }
 
+// Escapar caracteres especiales para Markdown
+function escapeMarkdown(text) {
+  return text.replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
+}
+
 // Ruta webhook
 app.post(`/bot${token}`, (req, res) => {
   logAction('webhook_received', { update: req.body });
@@ -107,9 +112,12 @@ async function checkIPTVList(url) {
         expiresAt: user_info.exp_date ? new Date(user_info.exp_date * 1000).toLocaleDateString('es-ES') : 'Ilimitada',
         activeConnections: user_info.active_cons,
         maxConnections: user_info.max_connections,
-        channels: streams.data.map(s => s.name).join(' 🌐 '),
-        movies: vod.data.map(v => v.name).join(' 🌐 '),
-        series: series.data.map(s => s.name).join(' 🌐 '),
+        channels: streams.data.slice(0, 10).map(s => s.name), // Limitar a 10 canales
+        movies: vod.data.slice(0, 5).map(v => v.name),       // Limitar a 5 películas
+        series: series.data.slice(0, 5).map(s => s.name),   // Limitar a 5 series
+        totalChannels: streams.data.length,
+        totalMovies: vod.data.length,
+        totalSeries: series.data.length,
         timezone: server_info.timezone || 'Desconocida'
       };
     }
@@ -117,15 +125,18 @@ async function checkIPTVList(url) {
     if (url.endsWith('.m3u') || url.endsWith('.m3u8')) {
       const response = await axios.get(url, { timeout: 2000 });
       const lines = response.data.split('\n');
-      const channels = lines.filter(line => line.startsWith('#EXTINF')).map(line => line.split(',')[1].trim()).join(' 🌐 ');
+      const channels = lines.filter(line => line.startsWith('#EXTINF')).map(line => line.split(',')[1].trim()).slice(0, 10); // Limitar a 10
 
       logAction('check_m3u_success', { url, channels: channels.length });
       return {
         type: 'M3U/M3U8',
         status: channels.length > 0 ? 'Activa' : 'Inactiva',
         channels,
-        movies: '',
-        series: ''
+        movies: [],
+        series: [],
+        totalChannels: lines.filter(line => line.startsWith('#EXTINF')).length,
+        totalMovies: 0,
+        totalSeries: 0
       };
     }
 
@@ -142,23 +153,28 @@ function formatResponse(msg, result) {
   const timestamp = new Date().toLocaleString('es-ES', { timeZone: 'America/Mexico_City' });
   const username = msg.from.username ? `@${msg.from.username}` : msg.from.first_name;
 
-  let response = `✨ Hola ${username}, aquí tienes los detalles de tu lista IPTV gracias a *${botName}* ✨\n\n` +
+  let response = `✨ Hola ${escapeMarkdown(username)}, aquí tienes los detalles de tu lista IPTV gracias a *${botName}* ✨\n\n` +
     `⏳ *Verificado el*: ${timestamp}\n\n` +
-    `📡 *Lista M3U*: ${result.type === 'Xtream Codes' ? `${result.server}/get.php?username=${result.username}&password=${result.password}&type=m3u_plus` : result.server || 'N/A'}\n` +
-    `🔧 *Player API*: ${result.type === 'Xtream Codes' ? `${result.server}/player_api.php?username=${result.username}&password=${result.password}` : 'N/A'}\n\n` +
+    `📡 *Lista M3U*: ${escapeMarkdown(result.type === 'Xtream Codes' ? `${result.server}/get.php?username=${result.username}&password=${result.password}&type=m3u_plus` : result.server || 'N/A')}\n` +
+    `🔧 *Player API*: ${escapeMarkdown(result.type === 'Xtream Codes' ? `${result.server}/player_api.php?username=${result.username}&password=${result.password}` : 'N/A')}\n\n` +
     `📜 *Mensaje*: Bienvenido a ${botName.toUpperCase()} - Servicio gratuito 2020-2025\n` +
     `${result.status === 'Active' ? '✅' : '❌'} *Estado*: ${result.status === 'Active' ? 'Activa' : result.status}\n` +
-    `${result.username ? `👤 *Credenciales*: ${result.username}:${result.password}\n` : ''}` +
+    `${result.username ? `👤 *Credenciales*: ${escapeMarkdown(result.username)}:${escapeMarkdown(result.password)}\n` : ''}` +
     `📅 *Creada*: ${result.createdAt}\n` +
     `⏰ *Expira*: ${result.expiresAt}\n` +
     `${result.activeConnections !== undefined ? `🔗 *Conexiones activas*: ${result.activeConnections}\n` : ''}` +
     `${result.maxConnections !== undefined ? `🔗 *Conexiones máximas*: ${result.maxConnections}\n` : ''}` +
-    `📊 *Total de canales*: ${result.channels ? result.channels.split(' 🌐 ').length : 0}\n` +
-    `${result.server ? `🌍 *Servidor*: ${result.server}\n` : ''}` +
+    `📊 *Total de canales*: ${result.totalChannels || 0}\n` +
+    `🎬 *Total de películas*: ${result.totalMovies || 0}\n` +
+    `📽 *Total de series*: ${result.totalSeries || 0}\n` +
+    `${result.server ? `🌍 *Servidor*: ${escapeMarkdown(result.server)}\n` : ''}` +
     `⏲ *Zona horaria*: ${result.timezone || 'N/A'}\n\n` +
-    `📺 *Canales*: ${result.channels ? result.channels : 'No disponible'}\n\n` +
-    `🎬 *Películas*: ${result.movies ? result.movies : 'No disponible'}\n\n` +
-    `📽 *Series*: ${result.series ? result.series : 'No disponible'}\n\n` +
+    `📺 *Canales (muestra)*: ${result.channels.length > 0 ? result.channels.map(c => escapeMarkdown(c)).join(' 🌐 ') : 'No disponible'}\n` +
+    `${result.channels.length < result.totalChannels ? `*(+${result.totalChannels - result.channels.length} más)*` : ''}\n\n` +
+    `🎬 *Películas (muestra)*: ${result.movies.length > 0 ? result.movies.map(m => escapeMarkdown(m)).join(' 🌐 ') : 'No disponible'}\n` +
+    `${result.movies.length < result.totalMovies ? `*(+${result.totalMovies - result.movies.length} más)*` : ''}\n\n` +
+    `📽 *Series (muestra)*: ${result.series.length > 0 ? result.series.map(s => escapeMarkdown(s)).join(' 🌐 ') : 'No disponible'}\n` +
+    `${result.series.length < result.totalSeries ? `*(+${result.totalSeries - result.series.length} más)*` : ''}\n\n` +
     `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
 
   return response;
@@ -188,7 +204,6 @@ bot.onText(/\/iptv/, async (msg) => {
     message_thread_id: ALLOWED_THREAD_ID,
     ...mainMenu
   });
-  await bot.sendMessage(chatId, `👍`, { message_thread_id: ALLOWED_THREAD_ID });
 });
 
 // Comando /guia
@@ -197,7 +212,7 @@ bot.onText(/\/guia/, async (msg) => {
   const threadId = msg.message_thread_id || '0';
   if (!isAllowedContext(chatId, threadId)) return;
 
-  await bot.sendMessage(chatId, `ℹ️ *Ayuda de ${botName}* ℹ️\n\n- Envia un enlace IPTV (M3U o Xtream) y lo verificaré.\n- Usa /iptv para el menú.\n- Totalmente gratis y sin límites.\n\n*Ejemplo*:\nhttp://server.com/get.php?username=xxx&password=yyy${adminMessage}`, {
+  await bot.sendMessage(chatId, `ℹ️ *Ayuda de ${botName}* ℹ️\n\n- Envía un enlace IPTV (M3U o Xtream) y lo verificaré.\n- Usa /iptv para el menú.\n- Totalmente gratis y sin límites.\n\n*Ejemplo*:\nhttp://server.com/get.php?username=xxx&password=yyy${adminMessage}`, {
     parse_mode: 'Markdown',
     message_thread_id: ALLOWED_THREAD_ID,
     ...mainMenu
@@ -220,16 +235,15 @@ bot.on('callback_query', async (query) => {
       if (!userHistory[userId] || userHistory[userId].length === 0) {
         await bot.sendMessage(chatId, `📑 Tu historial está vacío. Verifica una lista primero.${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', ...mainMenu });
       } else {
-        const history = userHistory[userId].slice(-5).map(h => `📡 ${h.url}\n${h.result.status === 'Active' ? '✅' : '❌'} ${h.result.status}\n⏳ ${h.timestamp.toLocaleString('es-ES')}`).join('\n\n');
+        const history = userHistory[userId].slice(-5).map(h => `📡 ${escapeMarkdown(h.url)}\n${h.result.status === 'Active' ? '✅' : '❌'} ${h.result.status}\n⏳ ${h.timestamp.toLocaleString('es-ES')}`).join('\n\n');
         await bot.sendMessage(chatId, `📑 *Últimas 5 verificaciones*:\n\n${history}${adminMessage}`, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, ...mainMenu });
       }
     } else if (action === 'alert') {
       await bot.sendMessage(chatId, `⏱ Envía un enlace IPTV seguido de los días para la alerta:\nEjemplo: http://server.com/get.php?username=xxx&password=yyy 3${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown' });
     } else if (action === 'help') {
-      await bot.sendMessage(chatId, `ℹ️ *Ayuda de ${botName}* ℹ️\n\n- Envia un enlace IPTV para verificarlo.\n- Usa /iptv para el menú.\n- Gratis y sin límites.${adminMessage}`, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, ...mainMenu });
+      await bot.sendMessage(chatId, `ℹ️ *Ayuda de ${botName}* ℹ️\n\n- Envía un enlace IPTV para verificarlo.\n- Usa /iptv para el menú.\n- Gratis y sin límites.${adminMessage}`, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, ...mainMenu });
     }
     await bot.answerCallbackQuery(query.id);
-    await bot.sendMessage(chatId, `👍`, { message_thread_id: ALLOWED_THREAD_ID });
   } catch (error) {
     logAction('callback_error', { action, error: error.message });
     await bot.sendMessage(chatId, `❌ Error: ${error.message}${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown' });
@@ -252,7 +266,7 @@ bot.on('message', async (msg) => {
     if (isIPTVUrl) {
       const url = text.split(' ')[0];
       const days = text.split(' ')[1] || null;
-      const checking = await bot.sendMessage(chatId, `🔎 Verificando ${url}...${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown' });
+      const checking = await bot.sendMessage(chatId, `🔎 Verificando ${escapeMarkdown(url)}...${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown' });
       const result = await checkIPTVList(url);
 
       if (!userHistory[userId]) userHistory[userId] = [];
@@ -269,8 +283,7 @@ bot.on('message', async (msg) => {
       if (days && replyTo.includes('⏱')) {
         if (result.expiresAt !== 'Ilimitada') {
           alerts[userId] = { url, expiresAt: new Date(result.expiresAt), notifyDaysBefore: parseInt(days) };
-          await bot.sendMessage(chatId, `⏱ Alerta configurada para ${url} (${days} días antes).${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown' });
-          await bot.sendMessage(chatId, `👍`, { message_thread_id: ALLOWED_THREAD_ID });
+          await bot.sendMessage(chatId, `⏱ Alerta configurada para ${escapeMarkdown(url)} (${days} días antes).${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown' });
         } else {
           await bot.sendMessage(chatId, `❌ No se puede configurar alerta: Lista ilimitada.${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown' });
         }
@@ -288,7 +301,7 @@ cron.schedule('0 9 * * *', async () => {
     const { url, expiresAt, notifyDaysBefore } = alerts[userId];
     const daysLeft = Math.ceil((expiresAt - new Date()) / (1000 * 60 * 60 * 24));
     if (daysLeft <= notifyDaysBefore) {
-      await bot.sendMessage(ALLOWED_CHAT_ID, `⏱ *Alerta* para <@${userId}>:\n${url} expira en ${daysLeft} días (${expiresAt.toLocaleString('es-ES')}).${adminMessage}`, {
+      await bot.sendMessage(ALLOWED_CHAT_ID, `⏱ *Alerta* para <@${userId}>:\n${escapeMarkdown(url)} expira en ${daysLeft} días (${expiresAt.toLocaleString('es-ES')}).${adminMessage}`, {
         message_thread_id: ALLOWED_THREAD_ID,
         parse_mode: 'Markdown'
       });
