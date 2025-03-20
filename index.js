@@ -174,8 +174,8 @@ const mainMenu = {
   }
 };
 
-// Comando /start
-bot.onText(/\/start/, async (msg) => {
+// Comando /iptv
+bot.onText(/\/iptv/, async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
   if (!isAllowedContext(chatId, threadId)) {
@@ -183,7 +183,7 @@ bot.onText(/\/start/, async (msg) => {
     return;
   }
 
-  await bot.sendMessage(chatId, `🌟 ¡Bienvenido a *${botName}*! 🌟\n\nSoy un bot gratuito para verificar listas IPTV. Usa los botones o envía un enlace directamente.\n\n*Comandos disponibles*:\n/start - Iniciar\n/help - Ayuda${adminMessage}`, {
+  await bot.sendMessage(chatId, `🌟 ¡Bienvenido a *${botName}*! 🌟\n\nSoy un bot gratuito para verificar listas IPTV. Usa los botones o envía un enlace directamente.\n\n*Comandos disponibles*:\n/iptv - Iniciar\n/guia - Ayuda${adminMessage}`, {
     parse_mode: 'Markdown',
     message_thread_id: ALLOWED_THREAD_ID,
     ...mainMenu
@@ -191,13 +191,13 @@ bot.onText(/\/start/, async (msg) => {
   await bot.sendMessage(chatId, `👍`, { message_thread_id: ALLOWED_THREAD_ID });
 });
 
-// Comando /help
-bot.onText(/\/help/, async (msg) => {
+// Comando /guia
+bot.onText(/\/guia/, async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
   if (!isAllowedContext(chatId, threadId)) return;
 
-  await bot.sendMessage(chatId, `ℹ️ *Ayuda de ${botName}* ℹ️\n\n- Envia un enlace IPTV (M3U o Xtream) y lo verificaré.\n- Usa /start para el menú.\n- Totalmente gratis y sin límites.\n\n*Ejemplo*:\nhttp://server.com/get.php?username=xxx&password=yyy${adminMessage}`, {
+  await bot.sendMessage(chatId, `ℹ️ *Ayuda de ${botName}* ℹ️\n\n- Envia un enlace IPTV (M3U o Xtream) y lo verificaré.\n- Usa /iptv para el menú.\n- Totalmente gratis y sin límites.\n\n*Ejemplo*:\nhttp://server.com/get.php?username=xxx&password=yyy${adminMessage}`, {
     parse_mode: 'Markdown',
     message_thread_id: ALLOWED_THREAD_ID,
     ...mainMenu
@@ -226,7 +226,7 @@ bot.on('callback_query', async (query) => {
     } else if (action === 'alert') {
       await bot.sendMessage(chatId, `⏱ Envía un enlace IPTV seguido de los días para la alerta:\nEjemplo: http://server.com/get.php?username=xxx&password=yyy 3${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown' });
     } else if (action === 'help') {
-      await bot.sendMessage(chatId, `ℹ️ *Ayuda de ${botName}* ℹ️\n\n- Envia un enlace IPTV para verificarlo.\n- Usa /start para el menú.\n- Gratis y sin límites.${adminMessage}`, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, ...mainMenu });
+      await bot.sendMessage(chatId, `ℹ️ *Ayuda de ${botName}* ℹ️\n\n- Envia un enlace IPTV para verificarlo.\n- Usa /iptv para el menú.\n- Gratis y sin límites.${adminMessage}`, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, ...mainMenu });
     }
     await bot.answerCallbackQuery(query.id);
     await bot.sendMessage(chatId, `👍`, { message_thread_id: ALLOWED_THREAD_ID });
