@@ -80,7 +80,6 @@ async function checkIPTVList(url) {
     url = url.trim();
     if (!url.startsWith('http')) url = `http://${url}`;
 
-    // Xtream Codes
     if (url.includes('get.php')) {
       logAction('check_xtream', { url });
       const [, params] = url.split('?');
@@ -113,7 +112,6 @@ async function checkIPTVList(url) {
       };
     }
 
-    // M3U/M3U8
     if (url.endsWith('.m3u') || url.endsWith('.m3u8')) {
       logAction('check_m3u', { url });
       const response = await axios.get(url, { timeout: 2000 });
@@ -133,7 +131,6 @@ async function checkIPTVList(url) {
       };
     }
 
-    // Enlace directo
     logAction('check_direct', { url });
     const response = await axios.head(url, { timeout: 2000 });
     const quality = await analyzeStreamQuality(url);
@@ -282,39 +279,35 @@ bot.on('callback_query', async (query) => {
         reply_markup: mainMenu
       });
     }
+    await bot.answerCallbackQuery(query.id);
   } catch (error) {
     logAction('callback_error', { action, error: error.message, userId });
-    await bot.sendMessage(chatId, `❌ Error procesando tu solicitud. Intenta de nuevo.\n\n📢 *Grupos Entre Hijos*`, {
+    await bot.sendMessage(chatId, `❌ Error procesando tu solicitud: ${error.message}\nIntenta de nuevo.\n\n📢 *Grupos Entre Hijos*`, {
       message_thread_id: ALLOWED_THREAD_ID
     });
   }
-
-  await bot.answerCallbackQuery(query.id);
 });
 
-// Procesar respuestas
+// Procesar mensajes
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
   const userId = msg.from.id;
+  const text = msg.text || '';
 
-  if (!isAllowedContext(chatId, threadId) || msg.text.startsWith('/')) return;
+  if (!isAllowedContext(chatId, threadId) || text.startsWith('/')) return;
 
-  const replyToMessage = msg.reply_to_message;
+  const replyToMessage = msg.reply_to_message || {};
+  const replyText = replyToMessage.text || '';
   const backButton = { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] };
 
   try {
-    // Verificar si es una respuesta a un mensaje del bot
-    if (!replyToMessage || !replyToMessage.from || !replyToMessage.from.is_bot) {
-      logAction('no_reply', { userId, text: msg.text });
-      return;
-    }
+    logAction('message_received', { userId, text, replyText, hasReply: !!replyToMessage.message_id });
 
-    const replyText = replyToMessage.text || '';
-    logAction('processing_message', { userId, text: msg.text, replyText });
-
-    if (replyText.includes('🔍 Ingresa la URL')) {
-      const url = msg.text;
+    // Detectar URLs IPTV directamente si no hay respuesta específica
+    const isIPTVUrl = text.match(/http[s]?:\/\/[^\s]+(get\.php|\.m3u|\.m3u8)/i);
+    if (isIPTVUrl && (!replyToMessage.message_id || replyText.includes('🔍 Ingresa la URL'))) {
+      const url = text;
       const checking = await bot.sendMessage(chatId, `🔍 Verificando ${url}...\n${generateProgressBar(0, 1)}`, { message_thread_id: ALLOWED_THREAD_ID });
       const result = await checkIPTVList(url);
 
@@ -343,10 +336,16 @@ bot.on('message', async (msg) => {
         reply_markup: backButton
       });
       logAction('verificar', { userId, url, status: result.status });
+      return;
+    }
+
+    if (!replyToMessage.message_id) {
+      logAction('no_reply', { userId, text });
+      return;
     }
 
     if (replyText.includes('📦 Ingresa URLs')) {
-      const urls = msg.text.split(',').map(url => url.trim());
+      const urls = text.split(',').map(url => url.trim());
       const total = urls.length;
       const progress = await bot.sendMessage(chatId, `📦 Verificando ${total} listas...\n${generateProgressBar(0, total)}`, { message_thread_id: ALLOWED_THREAD_ID });
 
@@ -380,7 +379,7 @@ bot.on('message', async (msg) => {
     }
 
     if (replyText.includes('⏰ Ingresa URL')) {
-      const [url, daysBefore] = msg.text.split(' ');
+      const [url, daysBefore] = text.split(' ');
       const days = parseInt(daysBefore);
       const result = await checkIPTVList(url);
 
@@ -397,7 +396,7 @@ bot.on('message', async (msg) => {
     }
 
     if (replyText.includes('📤 Ingresa URL')) {
-      const url = msg.text;
+      const url = text;
       const result = await checkIPTVList(url);
 
       if (result.status === 'Activa' || result.status === 'active') {
@@ -413,7 +412,7 @@ bot.on('message', async (msg) => {
     }
 
     if (replyText.includes('📺 Ingresa URL')) {
-      const [url, category] = msg.text.split(' ');
+      const [url, category] = text.split(' ');
       const result = await checkIPTVList(url);
 
       if (result.type === 'Xtream Codes' && result.status === 'active') {
@@ -429,7 +428,7 @@ bot.on('message', async (msg) => {
       }
     }
   } catch (error) {
-    logAction('message_error', { userId, text: msg.text, error: error.message });
+    logAction('message_error', { userId, text, error: error.message });
     await bot.sendMessage(chatId, `❌ Error: ${error.message}\nIntenta de nuevo.\n\n📢 *Grupos Entre Hijos*`, {
       message_thread_id: ALLOWED_THREAD_ID
     });
