@@ -2,8 +2,9 @@ const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const cron = require('node-cron');
 const fs = require('fs');
+const axios = require('axios');
 
-// Token del bot
+// Token del bot (usa tu token actual de Telegram)
 const token = '7861676131:AAFLv4dBIFiHV1OYc8BJH2U8kWPal7lpBMQ';
 const bot = new TelegramBot(token);
 
@@ -15,20 +16,15 @@ const port = process.env.PORT || 10000;
 app.use(express.json());
 
 // Configuración del webhook
-const webhookUrl = 'https://entrelinks.onrender.com';
+const webhookUrl = 'https://entrelinks.onrender.com'; // Ajusta si tu URL de Render cambia
 
-// Almacenar datos por grupo
-let warnedUsers = {}; // { chatId: { userId: { username, reason, warnedAt, warningCount } } }
-let reminderActive = {}; // { chatId: true/false }
-let knownUsers = {}; // { chatId: { userId: { id, username, first_name } } } - Almacenar usuarios detectados
-let scannedUsers = {}; // { chatId: { userId: true } } - Almacenar usuarios ya escaneados
+// ID del canal permitido
+const ALLOWED_CHAT_ID = '-1002348662107';
+
+// Almacenar datos
+let userHistory = {}; // { userId: [{ url, result, timestamp }] } - Historial
+let alerts = {}; // { userId: { url, expiresAt, notifyDaysBefore } } - Alertas
 const logsFile = 'bot_logs.json';
-
-// Número total de miembros (hardcodeado, ya que la API no lo proporciona)
-const TOTAL_MEMBERS = 7795;
-
-// Tamaño del bloque para escanear
-const BLOCK_SIZE = 500;
 
 // Inicializar el archivo de logs si no existe
 if (!fs.existsSync(logsFile)) {
@@ -52,18 +48,16 @@ app.post(`/bot${token}`, (req, res) => {
 
 // Ruta para la raíz (/)
 app.get('/', (req, res) => {
-  res.send('Bot is running');
+  res.send('EntreCheck_iptv is running');
 });
 
 // Iniciar el servidor
 app.listen(port, async () => {
   console.log(`🚀 Servidor escuchando en el puerto ${port}`);
-
-  // Configurar el webhook
   await setWebhookWithRetry();
 });
 
-// Función para configurar el webhook con manejo de errores 429
+// Configurar el webhook con manejo de errores 429
 async function setWebhookWithRetry() {
   try {
     console.log(`Configurando webhook: ${webhookUrl}/bot${token}`);
@@ -74,559 +68,310 @@ async function setWebhookWithRetry() {
       const retryAfter = error.response.data.parameters.retry_after || 1;
       console.warn(`⚠️ Error 429 Too Many Requests. Reintentando después de ${retryAfter} segundos...`);
       await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-      return setWebhookWithRetry(); // Reintentar
+      return setWebhookWithRetry();
     }
     console.error(`❌ Error al configurar webhook: ${error.message}`);
   }
 }
 
-// Verificar si el usuario tiene foto de perfil pública y @username
-async function checkUserProfile(user, chatId) {
-  let hasPublicPhoto = true;
-  let hasUsername = !!user.username;
+// Función para verificar si el mensaje proviene del canal permitido
+function isAllowedChat(chatId) {
+  return String(chatId) === ALLOWED_CHAT_ID;
+}
 
+// Función para verificar listas IPTV
+async function checkIPTVList(url) {
   try {
-    const photos = await bot.getUserProfilePhotos(user.id);
-    hasPublicPhoto = photos.total_count > 0;
-  } catch (error) {
-    console.error(`❌ Error al verificar foto de perfil de ${user.id}: ${error.message}`);
-    hasPublicPhoto = false; // Asumimos que no tiene foto pública si hay un error
-  }
+    if (url.includes('get.php')) { // Xtream Codes
+      const [, params] = url.split('?');
+      const { username, password } = Object.fromEntries(new URLSearchParams(params));
+      const server = url.split('/get.php')[0];
+      const apiUrl = `${server}/player_api.php?username=${username}&password=${password}`;
+      const response = await axios.get(apiUrl, { timeout: 5000 });
+      const { user_info, server_info } = response.data;
 
-  return { hasPublicPhoto, hasUsername };
-}
-
-// Verificar si el bot es administrador del grupo
-async function isBotAdmin(chatId) {
-  try {
-    const admins = await bot.getChatAdministrators(chatId);
-    const botId = (await bot.getMe()).id;
-    return admins.some(admin => admin.user.id === botId);
-  } catch (error) {
-    console.error(`❌ Error al verificar si el bot es administrador en ${chatId}: ${error.message}`);
-    return false;
-  }
-}
-
-// Función para añadir un usuario a la lista de usuarios conocidos
-function addKnownUser(chatId, user) {
-  if (!knownUsers[chatId]) knownUsers[chatId] = {};
-  if (!knownUsers[chatId][user.id]) {
-    knownUsers[chatId][user.id] = {
-      id: user.id,
-      username: user.username || null,
-      first_name: user.first_name
-    };
-  }
-}
-
-// Función para marcar un usuario como escaneado
-function markUserAsScanned(chatId, userId) {
-  if (!scannedUsers[chatId]) scannedUsers[chatId] = {};
-  scannedUsers[chatId][userId] = true;
-}
-
-// Función para enviar advertencia a un usuario en el grupo
-async function warnUserInGroup(user, chatId, reason) {
-  const username = user.username ? `@${user.username}` : user.first_name;
-  const userId = user.id;
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowStr = tomorrow.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' });
-
-  // Inicializar warnedUsers para el grupo si no existe
-  if (!warnedUsers[chatId]) warnedUsers[chatId] = {};
-
-  // Incrementar el conteo de advertencias
-  if (!warnedUsers[chatId][userId]) {
-    warnedUsers[chatId][userId] = { username: user.username || user.first_name, reason, warnedAt: new Date(), warningCount: 0, chatId };
-  }
-  warnedUsers[chatId][userId].warningCount += 1;
-  warnedUsers[chatId][userId].reason = reason; // Actualizar el motivo
-  warnedUsers[chatId][userId].warnedAt = new Date(); // Actualizar la fecha de advertencia
-
-  const message = `⚠️ ${username} (ID: ${userId}),\n` +
-    `No tienes ${reason}. Por favor, configúralo antes del ${tomorrowStr}, ` +
-    `o serás expulsado del grupo.\n` +
-    `📊 Advertencias: ${warnedUsers[chatId][userId].warningCount}/3\n\n` +
-    `📢 Equipo de Administración Entre Hijos`;
-
-  try {
-    await bot.sendMessage(chatId, message);
-    logAction('advertencia', { userId, username, reason, warningCount: warnedUsers[chatId][userId].warningCount, chatId });
-  } catch (error) {
-    console.error(`❌ Error al enviar advertencia en el grupo para ${user.id}: ${error.message}`);
-  }
-
-  // Si el usuario alcanza 3 advertencias, generar mensaje de expulsión
-  if (warnedUsers[chatId][userId].warningCount >= 3) {
-    const kickMessage = `/kick @${username} (Motivo: ${reason}, 3 advertencias alcanzadas)`;
-    try {
-      await bot.sendMessage(chatId, kickMessage);
-      logAction('expulsion', { userId, username, reason, warningCount: warnedUsers[chatId][userId].warningCount, chatId });
-      delete warnedUsers[chatId][userId]; // Eliminar al usuario de la lista de advertidos
-    } catch (error) {
-      console.error(`❌ Error al enviar mensaje de expulsión para ${user.id}: ${error.message}`);
+      const quality = user_info.max_connections > 1 ? '1080p (estable)' : '720p (posible buffering)';
+      return {
+        type: 'Xtream Codes',
+        status: user_info.status,
+        username: user_info.username,
+        password: user_info.password,
+        server: server,
+        createdAt: new Date(user_info.created_at * 1000).toLocaleString('es-ES'),
+        expiresAt: new Date(user_info.exp_date * 1000).toLocaleString('es-ES'),
+        maxConnections: user_info.max_connections,
+        activeConnections: user_info.active_cons,
+        channels: (await axios.get(`${apiUrl}&action=get_live_streams`)).data.length,
+        quality,
+        risk: server.includes('suspicious') ? 'Posible riesgo detectado' : 'Sin riesgos aparentes'
+      };
+    } else if (url.endsWith('.m3u') || url.endsWith('.m3u8')) { // M3U/M3U8
+      const response = await axios.get(url, { timeout: 5000 });
+      const lines = response.data.split('\n');
+      const channels = lines.filter(line => line.startsWith('#EXTINF')).length;
+      const quality = channels > 100 ? '1080p (alta carga)' : '720p (estándar)';
+      return {
+        type: 'M3U/M3U8',
+        status: channels > 0 ? 'Activa' : 'Inactiva',
+        channels,
+        quality,
+        risk: url.includes('suspicious') ? 'Posible riesgo detectado' : 'Sin riesgos aparentes'
+      };
+    } else { // Enlace directo
+      const response = await axios.head(url, { timeout: 5000 });
+      const quality = response.headers['content-length'] > 1000000 ? '1080p' : 'SD';
+      return {
+        type: 'Direct Link',
+        status: response.status === 200 ? 'Activa' : 'Inactiva',
+        quality,
+        risk: url.includes('suspicious') ? 'Posible riesgo detectado' : 'Sin riesgos aparentes'
+      };
     }
+  } catch (error) {
+    return { type: 'Desconocido', status: 'Error', error: error.message };
   }
 }
 
-// Función para generar una barra de progreso
+// Generar barra de progreso
 function generateProgressBar(progress, total) {
   const barLength = 20;
   const filled = Math.round((progress / total) * barLength);
   const empty = barLength - filled;
-  return `📊 Progreso: [${'█'.repeat(filled)}${'-'.repeat(empty)}] ${Math.round((progress / total) * 100)}%`;
+  return `📊 [${'█'.repeat(filled)}${'-'.repeat(empty)}] ${Math.round((progress / total) * 100)}%`;
 }
 
-// Comando /m1: Mostrar lista de comandos
-bot.onText(/\/m1/, async (msg) => {
+// Comando /start
+bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
-  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
-    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.\n\n📢 Equipo de Administración Entre Hijos');
+  if (!isAllowedChat(chatId)) {
+    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
     return;
   }
 
-  // Verificar si el bot es administrador
-  if (!(await isBotAdmin(chatId))) {
-    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
+  const welcomeMessage = `👋 ¡Bienvenido a *EntreCheck_iptv*! 👋\n\n` +
+    `Soy tu herramienta para verificar y gestionar listas IPTV de forma segura y eficiente.\n\n` +
+    `📋 *Comandos disponibles:*\n` +
+    `/check <url> - Verifica una lista IPTV\n` +
+    `/bulk <urls> - Analiza múltiples listas (separadas por comas)\n` +
+    `/history - Revisa tu historial\n` +
+    `/alert <url> <días> - Configura alertas de caducidad\n` +
+    `/export <url> - Genera enlace para apps como VLC\n` +
+    `/filters <url> <categoría> - Filtra canales por categoría\n\n` +
+    `📢 *EntreCheck IPTV Team*`;
+  await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
+});
+
+// Comando /check: Verificar una lista IPTV
+bot.onText(/\/check (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  if (!isAllowedChat(chatId)) {
+    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
     return;
   }
 
-  const commandsList = `📋 **Lista de Comandos - Equipo de Administración Entre Hijos** 📋\n\n` +
-    `🔍 **/busqueda**\n` +
-    `   Escanea los usuarios detectados en el grupo en bloques de ${BLOCK_SIZE}, detectando aquellos sin foto de perfil pública o @username. Envía una advertencia en el grupo a cada usuario detectado.\n\n` +
-    `🧹 **/limpiar**\n` +
-    `   Genera mensajes de expulsión para los usuarios advertidos (formato: /kick @username (Motivo: ...)). Limpia la lista de advertidos.\n\n` +
-    `📜 **/advertidos**\n` +
-    `   Muestra una lista de los usuarios que han sido advertidos, con el motivo y la fecha de advertencia.\n\n` +
-    `📊 **/detalles**\n` +
-    `   Muestra estadísticas del grupo: número total de miembros, usuarios sin foto de perfil pública y usuarios sin @username.\n\n` +
-    `⏰ **/recordatorio**\n` +
-    `   Activa o desactiva un recordatorio diario para los usuarios advertidos.\n\n` +
-    `📜 **/logs**\n` +
-    `   Muestra las últimas 10 acciones del bot (solo para administradores).\n\n` +
-    `ℹ️ **/m1**\n` +
-    `   Muestra esta lista de comandos con una descripción detallada.\n\n` +
-    `📢 **Funcionalidades automáticas**:\n` +
-    `   - Detecta cambios de @username y lo notifica en el grupo.\n` +
-    `   - Restringe mensajes de usuarios sin foto de perfil pública o @username, enviando una advertencia en el grupo.\n\n` +
-    `📢 Equipo de Administración Entre Hijos`;
+  const url = match[1];
+  const checkingMessage = await bot.sendMessage(chatId, `🔍 Verificando ${url}...\n${generateProgressBar(0, 1)}`);
+  const result = await checkIPTVList(url);
 
-  try {
-    await bot.sendMessage(chatId, commandsList, { parse_mode: 'Markdown' });
-  } catch (error) {
-    console.error(`❌ Error al enviar mensaje de /m1 en ${chatId}: ${error.message}`);
-    await bot.sendMessage(chatId, '❌ Ocurrió un error al mostrar la lista de comandos. Intenta de nuevo más tarde.\n\n📢 Equipo de Administración Entre Hijos');
+  if (!userHistory[userId]) userHistory[userId] = [];
+  userHistory[userId].push({ url, result, timestamp: new Date() });
+
+  const responseMessage = `✅ Resultado:\n\n` +
+    `📡 Tipo: ${result.type}\n` +
+    `Estado: ${result.status}\n` +
+    (result.username ? `👤 Usuario: ${result.username}\n🔑 Contraseña: ${result.password}\n🌐 Servidor: ${result.server}\n` : '') +
+    (result.createdAt ? `📅 Creada: ${result.createdAt}\n⏰ Expira: ${result.expiresAt}\n` : '') +
+    (result.channels ? `📺 Canales: ${result.channels}\n` : '') +
+    (result.maxConnections ? `🔗 Conexiones máx.: ${result.maxConnections}\n🔌 Activas: ${result.activeConnections}\n` : '') +
+    `📽 Calidad: ${result.quality || 'Desconocida'}\n` +
+    `⚠️ Riesgo: ${result.risk || 'Sin datos'}\n` +
+    (result.error ? `❌ Error: ${result.error}\n` : '') +
+    `\n📢 *EntreCheck IPTV Team*`;
+
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: '📺 Canales', callback_data: `channels_${url}` }, { text: '🔄 Reanalizar', callback_data: `recheck_${url}` }],
+      [{ text: '📤 Exportar', callback_data: `export_${url}` }]
+    ]
+  };
+  await bot.editMessageText(responseMessage, {
+    chat_id: chatId,
+    message_id: checkingMessage.message_id,
+    parse_mode: 'Markdown',
+    reply_markup: keyboard
+  });
+  logAction('check', { userId, url, status: result.status });
+});
+
+// Comando /bulk: Verificación masiva
+bot.onText(/\/bulk (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  if (!isAllowedChat(chatId)) {
+    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
+    return;
+  }
+
+  const urls = match[1].split(',').map(url => url.trim());
+  const total = urls.length;
+
+  const progressMessage = await bot.sendMessage(chatId, `🔍 Verificando ${total} listas...\n${generateProgressBar(0, total)}`);
+  let processed = 0;
+  let results = [];
+
+  for (const url of urls) {
+    const result = await checkIPTVList(url);
+    results.push({ url, status: result.status });
+    processed++;
+    await bot.editMessageText(
+      `🔍 Progreso: ${processed}/${total}\n${generateProgressBar(processed, total)}`,
+      { chat_id: chatId, message_id: progressMessage.message_id }
+    );
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+
+  if (!userHistory[userId]) userHistory[userId] = [];
+  userHistory[userId].push(...results.map(r => ({ url: r.url, result: { status: r.status }, timestamp: new Date() })));
+
+  const finalMessage = `✅ Resultados:\n\n` +
+    results.map(r => `📡 ${r.url}: ${r.status}`).join('\n') +
+    `\n\n📢 *EntreCheck IPTV Team*`;
+  await bot.editMessageText(finalMessage, { chat_id: chatId, message_id: progressMessage.message_id, parse_mode: 'Markdown' });
+  logAction('bulk', { userId, urls, processed });
+});
+
+// Comando /history: Mostrar historial
+bot.onText(/\/history/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  if (!isAllowedChat(chatId)) {
+    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
+    return;
+  }
+
+  if (!userHistory[userId] || userHistory[userId].length === 0) {
+    await bot.sendMessage(chatId, 'ℹ️ No tienes historial de verificaciones.\n\n📢 *EntreCheck IPTV Team*');
+    return;
+  }
+
+  const historyMessage = `📜 Historial (últimas 5):\n\n` +
+    userHistory[userId].slice(-5).map(h =>
+      `📡 ${h.url}\nEstado: ${h.result.status}\n⏰ ${h.timestamp.toLocaleString('es-ES')}\n`
+    ).join('\n') +
+    `\n📢 *EntreCheck IPTV Team*`;
+  await bot.sendMessage(chatId, historyMessage, { parse_mode: 'Markdown' });
+});
+
+// Comando /alert: Configurar alertas
+bot.onText(/\/alert (.+) (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  if (!isAllowedChat(chatId)) {
+    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
+    return;
+  }
+
+  const url = match[1];
+  const daysBefore = parseInt(match[2]);
+
+  const result = await checkIPTVList(url);
+  if (result.expiresAt) {
+    alerts[userId] = { url, expiresAt: new Date(result.expiresAt), notifyDaysBefore: daysBefore };
+    await bot.sendMessage(chatId, `⏰ Alerta configurada para ${url}. Te avisaré ${daysBefore} días antes.\n\n📢 *EntreCheck IPTV Team*`);
+    logAction('alert_set', { userId, url, daysBefore });
+  } else {
+    await bot.sendMessage(chatId, `❌ No se pudo configurar: sin fecha de expiración.\n\n📢 *EntreCheck IPTV Team*`);
   }
 });
 
-// Comando /detalles: Mostrar estadísticas del grupo
-bot.onText(/\/detalles/, async (msg) => {
-  const chatId = msg.chat.id;
-  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
-    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  // Verificar si el bot es administrador
-  if (!(await isBotAdmin(chatId))) {
-    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  try {
-    // Obtener información del chat
-    const chat = await bot.getChat(chatId);
-
-    // Obtener usuarios conocidos
-    const users = knownUsers[chatId] ? Object.values(knownUsers[chatId]) : [];
-    const totalScanned = scannedUsers[chatId] ? Object.keys(scannedUsers[chatId]).length : 0;
-
-    // Contar usuarios sin foto de perfil pública y sin @username
-    let noPhotoCount = 0;
-    let noUsernameCount = 0;
-    for (const user of users) {
-      const { hasPublicPhoto, hasUsername } = await checkUserProfile(user, chatId);
-      if (!hasPublicPhoto) noPhotoCount++;
-      if (!hasUsername) noUsernameCount++;
-      await new Promise(resolve => setTimeout(resolve, 50)); // Pausa para evitar límites de la API
-    }
-
-    const statsMessage = `📊 **Estadísticas del grupo - ${chat.title}** 📊\n\n` +
-      `👥 **Número total de miembros**: ${TOTAL_MEMBERS}\n` +
-      `👤 **Usuarios detectados**: ${users.length}\n` +
-      `🔍 **Usuarios escaneados**: ${totalScanned}\n` +
-      `📸 **Usuarios sin foto de perfil pública**: ${noPhotoCount} (basado en usuarios detectados)\n` +
-      `📛 **Usuarios sin @username**: ${noUsernameCount} (basado en usuarios detectados)\n\n` +
-      `📢 Equipo de Administración Entre Hijos`;
-
-    await bot.sendMessage(chatId, statsMessage, { parse_mode: 'Markdown' });
-  } catch (error) {
-    console.error(`❌ Error en /detalles: ${error.message}`);
-    await bot.sendMessage(chatId, '❌ Ocurrió un error al obtener las estadísticas. Intenta de nuevo más tarde.\n\n📢 Equipo de Administración Entre Hijos');
-  }
-});
-
-// Comando /busqueda: Escanear los usuarios detectados en bloques de 500
-bot.onText(/\/busqueda/, async (msg) => {
-  const chatId = msg.chat.id;
-  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
-    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  // Verificar si el bot es administrador
-  if (!(await isBotAdmin(chatId))) {
-    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  try {
-    // Obtener usuarios conocidos
-    const users = knownUsers[chatId] ? Object.values(knownUsers[chatId]) : [];
-    const totalKnownUsers = users.length;
-
-    if (totalKnownUsers === 0) {
-      await bot.sendMessage(chatId, 'ℹ️ No se han detectado usuarios en el grupo todavía. Los usuarios se detectan cuando envían mensajes o se actualiza su estado en el grupo.\n\n📢 Equipo de Administración Entre Hijos');
-      return;
-    }
-
-    // Filtrar usuarios que no han sido escaneados
-    const unscannedUsers = users.filter(user => !scannedUsers[chatId]?.[user.id]);
-    const totalUnscanned = unscannedUsers.length;
-
-    if (totalUnscanned === 0) {
-      await bot.sendMessage(chatId, 'ℹ️ Todos los usuarios detectados ya han sido escaneados. Espera a que más usuarios interactúen en el grupo para continuar.\n\n📢 Equipo de Administración Entre Hijos');
-      return;
-    }
-
-    // Tomar un bloque de 500 usuarios (o menos si no hay suficientes)
-    const blockToScan = unscannedUsers.slice(0, BLOCK_SIZE);
-    const totalToScan = blockToScan.length;
-
-    // Enviar mensaje inicial con barra de progreso
-    const totalScannedBefore = scannedUsers[chatId] ? Object.keys(scannedUsers[chatId]).length : 0;
-    const progressMessage = await bot.sendMessage(chatId, `🔍 Iniciando búsqueda de usuarios sin foto de perfil pública o @username...\n` +
-      `ℹ️ Escaneando un bloque de ${totalToScan} usuarios (de ${totalKnownUsers} detectados, ${totalScannedBefore} ya escaneados).\n` +
-      `${generateProgressBar(0, totalToScan)}\n` +
-      `Usuarios procesados: 0/${totalToScan}\n\n` +
-      `📢 Equipo de Administración Entre Hijos`);
-
-    const botId = (await bot.getMe()).id;
-    let processedMembers = 0;
-    let warnedCount = 0;
-
-    // Procesar el bloque de usuarios
-    for (const user of blockToScan) {
-      if (user.id === botId || user.is_bot) {
-        processedMembers++;
-        markUserAsScanned(chatId, user.id);
-        continue;
-      }
-
-      const { hasPublicPhoto, hasUsername } = await checkUserProfile(user, chatId);
-      if (!hasPublicPhoto) {
-        await warnUserInGroup(user, chatId, 'foto de perfil pública');
-        warnedCount++;
-      } else if (!hasUsername) {
-        await warnUserInGroup(user, chatId, '@username');
-        warnedCount++;
-      }
-
-      processedMembers++;
-      markUserAsScanned(chatId, user.id);
-
-      // Actualizar la barra de progreso cada 10 usuarios o al final
-      if (processedMembers % 10 === 0 || processedMembers === totalToScan) {
-        await bot.editMessageText(
-          `🔍 Buscando usuarios sin foto de perfil pública o @username...\n` +
-          `ℹ️ Escaneando un bloque de ${totalToScan} usuarios (de ${totalKnownUsers} detectados, ${totalScannedBefore} ya escaneados).\n` +
-          `${generateProgressBar(processedMembers, totalToScan)}\n` +
-          `Usuarios procesados: ${processedMembers}/${totalToScan}\n\n` +
-          `📢 Equipo de Administración Entre Hijos`,
-          { chat_id: chatId, message_id: progressMessage.message_id }
-        );
-      }
-
-      // Pequeña pausa para evitar límites de la API
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-
-    // Mensaje final
-    const totalScannedAfter = scannedUsers[chatId] ? Object.keys(scannedUsers[chatId]).length : 0;
-    const remainingUnscanned = totalKnownUsers - totalScannedAfter;
-    const finalMessage = `✅ Búsqueda completada.\n` +
-      `ℹ️ Se escanearon ${totalToScan} usuarios en este bloque.\n` +
-      `${generateProgressBar(processedMembers, totalToScan)}\n` +
-      `Usuarios procesados: ${processedMembers}/${totalToScan}\n` +
-      `Se advirtieron a ${warnedCount} usuarios.\n` +
-      `📊 Total escaneados: ${totalScannedAfter}/${totalKnownUsers} detectados (de ${TOTAL_MEMBERS} miembros).\n` +
-      `👀 Usuarios restantes por escanear: ${remainingUnscanned}\n` +
-      `Usa /advertidos para ver la lista de advertidos o /limpiar para preparar la expulsión.\n` +
-      `Ejecuta /busqueda nuevamente para escanear el siguiente bloque.\n\n` +
-      `📢 Equipo de Administración Entre Hijos`;
-
-    await bot.editMessageText(finalMessage, { chat_id: chatId, message_id: progressMessage.message_id });
-  } catch (error) {
-    console.error(`❌ Error en /busqueda: ${error.message}`);
-    await bot.sendMessage(chatId, '❌ Ocurrió un error al realizar la búsqueda. Intenta de nuevo más tarde.\n\n📢 Equipo de Administración Entre Hijos');
-  }
-});
-
-// Comando /limpiar: Generar mensajes de expulsión
-bot.onText(/\/limpiar/, async (msg) => {
-  const chatId = msg.chat.id;
-  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
-    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  // Verificar si el bot es administrador
-  if (!(await isBotAdmin(chatId))) {
-    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  if (!warnedUsers[chatId] || Object.keys(warnedUsers[chatId]).length === 0) {
-    await bot.sendMessage(chatId, 'ℹ️ No hay usuarios advertidos para limpiar.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  try {
-    await bot.sendMessage(chatId, '📋 Generando mensajes de expulsión...\n\n📢 Equipo de Administración Entre Hijos');
-    for (const userId in warnedUsers[chatId]) {
-      const user = warnedUsers[chatId][userId];
-      const reason = user.reason === 'foto de perfil pública' ? 'falta foto de perfil pública' : 'falta @username';
-      const message = `/kick @${user.username} (Motivo: ${reason})`;
-      await bot.sendMessage(chatId, message);
-      logAction('expulsion_manual', { userId, username: user.username, reason, chatId });
-      // Pequeña pausa para evitar límites de la API
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-
-    // Limpiar la lista de advertidos después de generar los mensajes
-    warnedUsers[chatId] = {};
-    await bot.sendMessage(chatId, '✅ Mensajes de expulsión generados. La lista de advertidos ha sido limpiada.\n\n📢 Equipo de Administración Entre Hijos');
-  } catch (error) {
-    console.error(`❌ Error en /limpiar: ${error.message}`);
-    await bot.sendMessage(chatId, '❌ Ocurrió un error al generar los mensajes de expulsión. Intenta de nuevo más tarde.\n\n📢 Equipo de Administración Entre Hijos');
-  }
-});
-
-// Comando /advertidos: Mostrar lista de usuarios advertidos
-bot.onText(/\/advertidos/, async (msg) => {
-  const chatId = msg.chat.id;
-  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
-    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  // Verificar si el bot es administrador
-  if (!(await isBotAdmin(chatId))) {
-    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  if (!warnedUsers[chatId] || Object.keys(warnedUsers[chatId]).length === 0) {
-    await bot.sendMessage(chatId, 'ℹ️ No hay usuarios advertidos actualmente.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  try {
-    let message = '📜 Lista de usuarios advertidos:\n\n';
-    for (const userId in warnedUsers[chatId]) {
-      const user = warnedUsers[chatId][userId];
-      const warnedAt = new Date(user.warnedAt).toLocaleString('es-ES');
-      message += `👤 ${user.username}\n` +
-        `   Motivo: falta ${user.reason}\n` +
-        `   📊 Advertencias: ${user.warningCount}/3\n` +
-        `   ⏰ Advertido el: ${warnedAt}\n\n`;
-    }
-    message += '📢 Equipo de Administración Entre Hijos';
-
-    await bot.sendMessage(chatId, message);
-  } catch (error) {
-    console.error(`❌ Error en /advertidos: ${error.message}`);
-    await bot.sendMessage(chatId, '❌ Ocurrió un error al mostrar la lista de advertidos. Intenta de nuevo más tarde.\n\n📢 Equipo de Administración Entre Hijos');
-  }
-});
-
-// Comando /recordatorio: Activar/desactivar recordatorio diario
-bot.onText(/\/recordatorio/, async (msg) => {
-  const chatId = msg.chat.id;
-  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
-    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  // Verificar si el bot es administrador
-  if (!(await isBotAdmin(chatId))) {
-    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
-    return;
-  }
-
-  // Verificar si el usuario es administrador
-  try {
-    const admins = await bot.getChatAdministrators(chatId);
-    if (!admins.some(admin => admin.user.id === msg.from.id)) {
-      await bot.sendMessage(chatId, '🚫 Este comando solo puede ser usado por administradores.\n\n📢 Equipo de Administración Entre Hijos');
-      return;
-    }
-
-    reminderActive[chatId] = !reminderActive[chatId];
-    const status = reminderActive[chatId] ? 'activado' : 'desactivado';
-    await bot.sendMessage(chatId, `⏰ Recordatorio diario ${status}.\n\n📢 Equipo de Administración Entre Hijos`);
-    logAction('recordatorio', { status, chatId });
-  } catch (error) {
-    console.error(`❌ Error en /recordatorio: ${error.message}`);
-    await bot.sendMessage(chatId, '❌ Ocurrió un error al configurar el recordatorio. Intenta de nuevo más tarde.\n\n📢 Equipo de Administración Entre Hijos');
-  }
-});
-
-// Programar recordatorio diario con node-cron (a las 9:00 AM todos los días)
+// Alertas diarias con node-cron (9:00 AM)
 cron.schedule('0 9 * * *', async () => {
-  for (const chatId in reminderActive) {
-    if (!reminderActive[chatId]) continue;
-
-    if (!warnedUsers[chatId]) continue;
-
-    for (const userId in warnedUsers[chatId]) {
-      const user = warnedUsers[chatId][userId];
-      const username = user.username;
-      const reason = user.reason;
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowStr = tomorrow.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' });
-
-      const message = `⏰ Recordatorio, ${username} (ID: ${userId}),\n` +
-        `No tienes ${reason}. Por favor, configúralo antes del ${tomorrowStr}, ` +
-        `o serás expulsado del grupo.\n` +
-        `📊 Advertencias: ${user.warningCount}/3\n\n` +
-        `📢 Equipo de Administración Entre Hijos`;
-
-      try {
-        await bot.sendMessage(chatId, message);
-        logAction('recordatorio_enviado', { userId, username, reason, chatId });
-      } catch (error) {
-        console.error(`❌ Error al enviar recordatorio a ${userId} en ${chatId}: ${error.message}`);
-      }
+  for (const userId in alerts) {
+    const { url, expiresAt, notifyDaysBefore } = alerts[userId];
+    const daysLeft = Math.ceil((expiresAt - new Date()) / (1000 * 60 * 60 * 24));
+    if (daysLeft <= notifyDaysBefore) {
+      await bot.sendMessage(ALLOWED_CHAT_ID, `⏰ Alerta para <@${userId}>: ${url} expira en ${daysLeft} días (${expiresAt.toLocaleString('es-ES')}).\n\n📢 *EntreCheck IPTV Team*`, { parse_mode: 'Markdown' });
+      logAction('alert_triggered', { userId, url, daysLeft });
     }
   }
 });
 
-// Comando /logs: Mostrar las últimas 10 acciones del bot (solo para administradores)
-bot.onText(/\/logs/, async (msg) => {
+// Comando /export: Exportar lista
+bot.onText(/\/export (.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
-  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
-    await bot.sendMessage(chatId, '🚫 Este comando solo puede usarse en grupos.\n\n📢 Equipo de Administración Entre Hijos');
+  if (!isAllowedChat(chatId)) {
+    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
     return;
   }
 
-  // Verificar si el bot es administrador
-  if (!(await isBotAdmin(chatId))) {
-    await bot.sendMessage(chatId, '🚫 El bot debe ser administrador del grupo para usar este comando.\n\n📢 Equipo de Administración Entre Hijos');
+  const url = match[1];
+  const result = await checkIPTVList(url);
+
+  if (result.status === 'Activa' || result.status === 'active') {
+    await bot.sendMessage(chatId, `📤 Lista exportada:\n${url}\nCompatible con VLC, IPTV Smarters, TiviMate.\n\n📢 *EntreCheck IPTV Team*`);
+    logAction('export', { userId: msg.from.id, url });
+  } else {
+    await bot.sendMessage(chatId, `❌ No se puede exportar: lista no activa.\n\n📢 *EntreCheck IPTV Team*`);
+  }
+});
+
+// Comando /filters: Filtrar canales (solo Xtream Codes por ahora)
+bot.onText(/\/filters (.+) (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  if (!isAllowedChat(chatId)) {
+    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
     return;
   }
 
-  // Verificar si el usuario es administrador
-  try {
-    const admins = await bot.getChatAdministrators(chatId);
-    if (!admins.some(admin => admin.user.id === msg.from.id)) {
-      await bot.sendMessage(chatId, '🚫 Este comando solo puede ser usado por administradores.\n\n📢 Equipo de Administración Entre Hijos');
-      return;
-    }
+  const url = match[1];
+  const category = match[2].toLowerCase();
 
-    const logs = JSON.parse(fs.readFileSync(logsFile));
-    const recentLogs = logs.slice(-10).reverse();
-    if (recentLogs.length === 0) {
-      await bot.sendMessage(chatId, 'ℹ️ No hay acciones registradas.\n\n📢 Equipo de Administración Entre Hijos');
-      return;
-    }
-
-    let message = '📜 **Últimas 10 acciones del bot** 📜\n\n';
-    for (const log of recentLogs) {
-      message += `⏰ ${log.timestamp}\n` +
-        `📋 Acción: ${log.action}\n` +
-        `   Detalles: ${JSON.stringify(log.details)}\n\n`;
-    }
-    message += '📢 Equipo de Administración Entre Hijos';
-
-    await bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-  } catch (error) {
-    console.error(`❌ Error en /logs: ${error.message}`);
-    await bot.sendMessage(chatId, '❌ Ocurrió un error al mostrar los logs. Intenta de nuevo más tarde.\n\n📢 Equipo de Administración Entre Hijos');
+  const result = await checkIPTVList(url);
+  if (result.type === 'Xtream Codes' && result.status === 'active') {
+    const apiUrl = `${result.server}/player_api.php?username=${result.username}&password=${result.password}&action=get_live_streams`;
+    const streams = (await axios.get(apiUrl)).data;
+    const filtered = streams.filter(s => s.category_name.toLowerCase().includes(category));
+    const filterMessage = `📺 "${category}":\n\n` +
+      filtered.slice(0, 5).map(s => `📡 ${s.name}`).join('\n') +
+      `\nTotal: ${filtered.length}\n\n📢 *EntreCheck IPTV Team*`;
+    await bot.sendMessage(chatId, filterMessage);
+  } else {
+    await bot.sendMessage(chatId, `❌ No se puede filtrar: lista incompatible o inactiva.\n\n📢 *EntreCheck IPTV Team*`);
   }
 });
 
-// Detectar usuarios a través de actualizaciones de chat_member
-bot.on('chat_member', async (update) => {
-  const chatId = update.chat.id;
-  if (update.chat.type !== 'group' && update.chat.type !== 'supergroup') return;
-
-  // Verificar si el bot es administrador
-  if (!(await isBotAdmin(chatId))) return;
-
-  const newMember = update.new_chat_member;
-  const oldMember = update.old_chat_member;
-
-  if (newMember && newMember.user) {
-    addKnownUser(chatId, newMember.user);
-  }
-  if (oldMember && oldMember.user) {
-    addKnownUser(chatId, oldMember.user);
+// Manejo de botones interactivos
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  const userId = query.from.id;
+  if (!isAllowedChat(chatId)) {
+    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
+    return;
   }
 
-  // Detectar cambios de @username
-  if (newMember && oldMember) {
-    const oldUsername = oldMember.user.username;
-    const newUsername = newMember.user.username;
+  const [action, url] = query.data.split('_');
 
-    if (oldUsername !== newUsername && oldUsername && newUsername) {
-      try {
-        await bot.sendMessage(chatId, `🔄 @${oldUsername} ha cambiado su nombre a @${newUsername}\n\n📢 Equipo de Administración Entre Hijos`);
-        logAction('cambio_username', { oldUsername, newUsername, chatId });
-        console.log(`📩 Cambio de @username detectado: @${oldUsername} a @${newUsername}`);
-      } catch (error) {
-        console.error(`❌ Error al notificar cambio de @username: ${error.message}`);
-      }
+  if (action === 'channels') {
+    const result = await checkIPTVList(url);
+    if (result.type === 'Xtream Codes' && result.status === 'active') {
+      const apiUrl = `${result.server}/player_api.php?username=${result.username}&password=${result.password}&action=get_live_streams`;
+      const streams = (await axios.get(apiUrl)).data.slice(0, 5);
+      const channelsMessage = `📺 Primeros 5 canales:\n\n` +
+        streams.map(s => `📡 ${s.name}`).join('\n') +
+        `\nTotal: ${result.channels}\n\n📢 *EntreCheck IPTV Team*`;
+      await bot.sendMessage(chatId, channelsMessage);
     }
+  } else if (action === 'recheck') {
+    const result = await checkIPTVList(url);
+    await bot.sendMessage(chatId, `🔄 Reanalizado ${url}:\nEstado: ${result.status}\n\n📢 *EntreCheck IPTV Team*`);
+    if (!userHistory[userId]) userHistory[userId] = [];
+    userHistory[userId].push({ url, result, timestamp: new Date() });
+  } else if (action === 'export') {
+    await bot.sendMessage(chatId, `📤 Exportado:\n${url}\n\n📢 *EntreCheck IPTV Team*`);
   }
+
+  await bot.answerCallbackQuery(query.id);
 });
 
-// Detectar usuarios a través de mensajes y restringir mensajes de usuarios sin foto de perfil pública o @username
-bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
-  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
-  if (msg.from.is_bot) return;
-
-  // Verificar si el bot es administrador
-  if (!(await isBotAdmin(chatId))) return;
-
-  // Añadir usuario a la lista de conocidos
-  addKnownUser(chatId, msg.from);
-
-  if (msg.text && msg.text.startsWith('/')) return; // Permitir comandos
-
-  try {
-    const { hasPublicPhoto, hasUsername } = await checkUserProfile(msg.from, chatId);
-    if (!hasPublicPhoto || !hasUsername) {
-      const username = hasUsername ? `@${msg.from.username}` : msg.from.first_name;
-      const reason = !hasPublicPhoto ? 'foto de perfil pública' : '@username';
-
-      // Eliminar el mensaje del usuario
-      try {
-        await bot.deleteMessage(chatId, msg.message_id);
-      } catch (error) {
-        console.error(`❌ Error al eliminar mensaje de ${username}: ${error.message}`);
-      }
-
-      // Enviar advertencia en el grupo
-      await bot.sendMessage(chatId, `🚫 ${username}, por favor configura tu ${reason} para poder hablar en el grupo.\n\n📢 Equipo de Administración Entre Hijos`);
-    }
-  } catch (error) {
-    console.error(`❌ Error al procesar mensaje en ${chatId}: ${error.message}`);
-  }
-});
-
-console.log('🚀 Bot iniciado correctamente 🎉');
+console.log('🚀 EntreCheck_iptv iniciado correctamente 🎉');
