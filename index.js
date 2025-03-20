@@ -47,12 +47,22 @@ const adminMessage = '\n\n👨‍💼 *Equipo de Administración EntresHijos*';
 
 // Inicializar logs y estadísticas
 if (!fs.existsSync(logsFile)) fs.writeFileSync(logsFile, JSON.stringify([]));
-if (!fs.existsSync(statsFile)) fs.writeFileSync(statsFile, JSON.stringify(stats));
+if (!fs.existsSync(statsFile)) fs.writeFileSync(statsFile, JSON.stringify({ totalChecks: 0, uniqueUsers: [], activeAlerts: 0 }));
 
-// Cargar estadísticas
+// Cargar estadísticas con manejo de errores
 function loadStats() {
-  stats = JSON.parse(fs.readFileSync(statsFile));
-  stats.uniqueUsers = new Set(stats.uniqueUsers); // Convertir array a Set
+  try {
+    const loadedStats = JSON.parse(fs.readFileSync(statsFile));
+    stats.totalChecks = loadedStats.totalChecks || 0;
+    stats.activeAlerts = loadedStats.activeAlerts || 0;
+    // Verificar que uniqueUsers sea un array; si no, inicializar como vacío
+    stats.uniqueUsers = new Set(Array.isArray(loadedStats.uniqueUsers) ? loadedStats.uniqueUsers : []);
+  } catch (error) {
+    console.error('Error al cargar estadísticas:', error.message);
+    // Si hay error, inicializar estadísticas por defecto
+    stats = { totalChecks: 0, uniqueUsers: new Set(), activeAlerts: 0 };
+    saveStats(); // Guardar estadísticas por defecto
+  }
 }
 
 // Guardar estadísticas
