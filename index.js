@@ -24,13 +24,42 @@ const ALLOWED_THREAD_ID = '53411';
 // Almacenar datos
 let userHistory = {};
 let alerts = {};
+let stats = { totalChecks: 0, uniqueUsers: new Set(), activeAlerts: 0 };
 const logsFile = 'bot_logs.json';
+const statsFile = 'bot_stats.json';
+
+// Base de datos estática de espejos (puedes expandirla o conectar a una API)
+const mirrorsDB = {
+  'http://srdigital.win:8080': ['http://160125.xyz:80'],
+  'http://line.premium-dino.com:80': [
+    'http://mag.tvplus.cc:80',
+    'http://ugotv.protv.cc:80',
+    'http://pure-iptv.in:80',
+    'http://line.premium-dino.com:80',
+    'http://mag.premium-dino.com:80',
+    'http://mag.mariopowers.com:80'
+  ],
+  'http://ultra-premium-pro.xyz:8080': ['http://ultra-premium-pro.xyz:8080']
+};
 
 // Mensaje fijo
 const adminMessage = '\n\n👨‍💼 *Equipo de Administración EntresHijos*';
 
-// Inicializar logs
+// Inicializar logs y estadísticas
 if (!fs.existsSync(logsFile)) fs.writeFileSync(logsFile, JSON.stringify([]));
+if (!fs.existsSync(statsFile)) fs.writeFileSync(statsFile, JSON.stringify(stats));
+
+// Cargar estadísticas
+function loadStats() {
+  stats = JSON.parse(fs.readFileSync(statsFile));
+  stats.uniqueUsers = new Set(stats.uniqueUsers); // Convertir array a Set
+}
+
+// Guardar estadísticas
+function saveStats() {
+  const statsToSave = { ...stats, uniqueUsers: Array.from(stats.uniqueUsers) };
+  fs.writeFileSync(statsFile, JSON.stringify(statsToSave, null, 2));
+}
 
 // Registrar logs
 function logAction(action, details) {
@@ -51,6 +80,17 @@ function getUserMention(user) {
   return user.username ? `@${escapeMarkdown(user.username)}` : escapeMarkdown(user.first_name);
 }
 
+// Autoeliminar mensaje después de 5 minutos
+async function autoDeleteMessage(chatId, messageId, threadId) {
+  setTimeout(async () => {
+    try {
+      await bot.deleteMessage(chatId, messageId);
+    } catch (error) {
+      logAction('delete_message_error', { chatId, messageId, error: error.message });
+    }
+  }, 300000); // 5 minutos = 300,000 ms
+}
+
 // Ruta webhook
 app.post(`/bot${token}`, (req, res) => {
   logAction('webhook_received', { update: req.body });
@@ -64,6 +104,7 @@ app.get('/', (req, res) => res.send(`${botName} is running`));
 app.listen(port, async () => {
   console.log(`🚀 Servidor en puerto ${port}`);
   await setWebhookWithRetry();
+  loadStats();
 });
 
 // Configurar webhook
@@ -97,7 +138,8 @@ async function checkIPTVList(url) {
     // 1. Xtream Codes
     if (url.includes('get.php')) {
       const [, params] = url.split('?');
-      const { username, password } = Object.fromEntries(new URLSearchParams(params));
+      const queryParams = Object.fromEntries(new URLSearchParams(params));
+      const { username, password, output = 'm3u_plus' } = queryParams;
       const server = url.split('/get.php')[0];
       const apiUrl = `${server}/player_api.php?username=${username}&password=${password}`;
 
@@ -206,7 +248,8 @@ function formatResponse(msg, result, previousMessageId = null) {
     `🎬 *Total de películas*: ${result.totalMovies || 0}\n` +
     `📽 *Total de series*: ${result.totalSeries || 0}\n` +
     `${result.timezone ? `⏲ *Zona horaria*: ${result.timezone}\n` : ''}` +
-    `${result.error ? `⚠️ *Error*: ${escapeMarkdown(result.error)}\n` : ''}\n` +
+    `${result.error ? `⚠️ *Error*: ${escapeMarkdown(result.error)}\n` : ''}` +
+    `${result.error ? `💡 *Sugerencia*: Prueba con /espejos ${escapeMarkdown(result.server)} para buscar servidores alternativos.\n` : ''}\n` +
     `📺 *Canales (muestra)*: ${result.channels?.length > 0 ? result.channels.map(c => escapeMarkdown(c)).join(' 🌐 ') : 'No disponible'}\n` +
     `${result.channels?.length < result.totalChannels ? `*(+${result.totalChannels - result.channels.length} más)*` : ''}\n\n` +
     `🎬 *Películas (muestra)*: ${result.movies?.length > 0 ? result.movies.map(m => escapeMarkdown(m)).join(' 🌐 ') : 'No disponible'}\n` +
@@ -223,7 +266,8 @@ const mainMenu = {
   reply_markup: {
     inline_keyboard: [
       [{ text: '🔎 Verificar Lista', callback_data: 'check' }, { text: '📑 Historial', callback_data: 'history' }],
-      [{ text: '⏱ Configurar Alerta', callback_data: 'alert' }, { text: 'ℹ️ Ayuda', callback_data: 'help' }]
+      [{ text: '⏱ Configurar Alerta', callback_data: 'alert' }, { text: 'ℹ️ Ayuda', callback_data: 'help' }],
+      [{ text: '📊 Estadísticas', callback_data: 'stats' }, { text: '🗑 Limpiar Historial', callback_data: 'clear' }]
     ]
   }
 };
@@ -235,15 +279,17 @@ bot.onText(/\/iptv/, async (msg) => {
   const userMention = getUserMention(msg.from);
 
   if (!isAllowedContext(chatId, threadId)) {
-    await bot.sendMessage(chatId, `🚫 ${userMention}, este bot solo funciona en: https://t.me/c/2348662107/53411${adminMessage}`, { message_thread_id: threadId, parse_mode: 'Markdown' });
+    const message = await bot.sendMessage(chatId, `🚫 ${userMention}, este bot solo funciona en: https://t.me/c/2348662107/53411${adminMessage}`, { message_thread_id: threadId, parse_mode: 'Markdown' });
+    autoDeleteMessage(chatId, message.message_id, threadId);
     return;
   }
 
-  await bot.sendMessage(chatId, `🌟 ¡Bienvenido ${userMention} a *${botName}*! 🌟\n\nSoy un bot gratuito para verificar listas IPTV. Usa los botones o envía un enlace directamente.\n\n*Comandos disponibles*:\n/iptv - Iniciar\n/guia - Ayuda${adminMessage}`, {
+  const message = await bot.sendMessage(chatId, `🌟 ¡Bienvenido ${userMention} a *${botName}*! 🌟\n\nSoy un bot gratuito para verificar listas IPTV. Usa los botones o envía un enlace directamente.\n\n*Comandos disponibles*:\n/iptv - Iniciar\n/guia - Ayuda\n/espejos - Buscar servidores alternativos\n/stats - Ver estadísticas\n/limpiar - Borrar tu historial${adminMessage}`, {
     parse_mode: 'Markdown',
     message_thread_id: ALLOWED_THREAD_ID,
     ...mainMenu
   });
+  autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
 });
 
 // Comando /guia
@@ -254,11 +300,114 @@ bot.onText(/\/guia/, async (msg) => {
 
   if (!isAllowedContext(chatId, threadId)) return;
 
-  await bot.sendMessage(chatId, `ℹ️ *Ayuda de ${botName}* para ${userMention} ℹ️\n\n- Envía un enlace IPTV (M3U, Xtream, TS, etc.) y lo verificaré.\n- Usa /iptv para el menú.\n- Totalmente gratis y sin límites.\n\n*Ejemplos*:\n- http://server.com/get.php?username=xxx&password=yyy\n- http://server.com/playlist.m3u\n- http://server.com/stream.ts${adminMessage}`, {
+  const helpMessage = `📖 *Guía de ${botName}* para ${userMention} 📖\n\n` +
+    `✨ *¿Para qué sirve este bot?*\n` +
+    `Soy un bot diseñado para ayudarte a gestionar y verificar listas IPTV de forma gratuita. Puedo analizar el estado de tus listas, buscar servidores alternativos (espejos) si un servidor falla, configurar alertas de expiración y más.\n\n` +
+    `🔧 *¿Cómo funciona?*\n` +
+    `- Usa /iptv para iniciar y ver el menú.\n` +
+    `- Envía un enlace IPTV para verificarlo (o usa el botón 🔎).\n` +
+    `- Si un servidor falla, usa /espejos para buscar alternativas.\n` +
+    `- Configura alertas de expiración con el botón ⏱.\n` +
+    `- Todos los mensajes se eliminan automáticamente después de 5 minutos para mantener el canal limpio.\n\n` +
+    `📋 *Tipos de listas compatibles*:\n` +
+    `- *Xtream Codes*: Ejemplo: http://server.com/get.php?username=xxx&password=yyy\n` +
+    `- *M3U/M3U8*: Ejemplo: http://server.com/playlist.m3u\n` +
+    `- *Enlaces directos (TS/HLS)*: Ejemplo: http://server.com/stream.ts\n` +
+    `- *Genérico*: Cualquier URL que pueda verificarse.\n\n` +
+    `📜 *Comandos disponibles*:\n` +
+    `/iptv - Iniciar el bot\n` +
+    `/guia - Ver esta guía\n` +
+    `/espejos <servidor> - Buscar servidores alternativos (espejos)\n` +
+    `/stats - Ver estadísticas del bot\n` +
+    `/limpiar - Borrar tu historial de verificaciones\n\n` +
+    `💡 *Ejemplo de uso*:\n` +
+    `- Verificar: http://server.com/get.php?username=xxx&password=yyy\n` +
+    `- Buscar espejos: /espejos http://srdigital.win:8080\n` +
+    `¡Explora y disfruta de un servicio 100% gratis!${adminMessage}`;
+
+  await bot.sendMessage(chatId, helpMessage, {
     parse_mode: 'Markdown',
     message_thread_id: ALLOWED_THREAD_ID,
     ...mainMenu
   });
+  // No se autoelimina para que la guía permanezca visible
+});
+
+// Comando /espejos
+bot.onText(/\/espejos\s+(.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const threadId = msg.message_thread_id || '0';
+  const userMention = getUserMention(msg.from);
+  const server = match[1].trim();
+
+  if (!isAllowedContext(chatId, threadId)) return;
+
+  const mirrors = mirrorsDB[server] || [];
+  let response;
+  if (mirrors.length > 0) {
+    response = `🪞 ${userMention}, aquí tienes los servidores espejo para ${escapeMarkdown(server)}:\n\n` +
+      mirrors.map(m => `- ${escapeMarkdown(m)}`).join('\n') + adminMessage;
+  } else {
+    response = `🪞 ${userMention}, no se encontraron servidores espejo para ${escapeMarkdown(server)}.\n` +
+      `💡 Intenta con otro servidor o contacta al soporte.${adminMessage}`;
+  }
+
+  const message = await bot.sendMessage(chatId, response, {
+    parse_mode: 'Markdown',
+    message_thread_id: ALLOWED_THREAD_ID
+  });
+  autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
+});
+
+// Comando /stats
+bot.onText(/\/stats/, async (msg) => {
+  const chatId = msg.chat.id;
+  const threadId = msg.message_thread_id || '0';
+  const userMention = getUserMention(msg.from);
+
+  if (!isAllowedContext(chatId, threadId)) return;
+
+  const response = `📊 *Estadísticas de ${botName}* para ${userMention} 📊\n\n` +
+    `🔍 *Verificaciones totales*: ${stats.totalChecks}\n` +
+    `👥 *Usuarios únicos*: ${stats.uniqueUsers.size}\n` +
+    `⏱ *Alertas activas*: ${stats.activeAlerts}\n\n` +
+    `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
+
+  const message = await bot.sendMessage(chatId, response, {
+    parse_mode: 'Markdown',
+    message_thread_id: ALLOWED_THREAD_ID,
+    ...mainMenu
+  });
+  autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
+});
+
+// Comando /limpiar
+bot.onText(/\/limpiar/, async (msg) => {
+  const chatId = msg.chat.id;
+  const threadId = msg.message_thread_id || '0';
+  const userId = msg.from.id;
+  const userMention = getUserMention(msg.from);
+
+  if (!isAllowedContext(chatId, threadId)) return;
+
+  if (userHistory[userId]) {
+    delete userHistory[userId];
+    const response = `🗑 ${userMention}, tu historial de verificaciones ha sido limpiado.${adminMessage}`;
+    const message = await bot.sendMessage(chatId, response, {
+      parse_mode: 'Markdown',
+      message_thread_id: ALLOWED_THREAD_ID,
+      ...mainMenu
+    });
+    autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
+  } else {
+    const response = `🗑 ${userMention}, no tienes historial para limpiar.${adminMessage}`;
+    const message = await bot.sendMessage(chatId, response, {
+      parse_mode: 'Markdown',
+      message_thread_id: ALLOWED_THREAD_ID,
+      ...mainMenu
+    });
+    autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
+  }
 });
 
 // Manejo de botones
@@ -274,23 +423,46 @@ bot.on('callback_query', async (query) => {
   const action = query.data;
   try {
     if (action === 'check') {
-      await bot.sendMessage(chatId, `🔎 ${userMention}, envía un enlace IPTV para verificar (M3U, Xtream, TS, etc.):${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: messageId });
+      const message = await bot.sendMessage(chatId, `🔎 ${userMention}, envía un enlace IPTV para verificar (M3U, Xtream, TS, etc.):${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: messageId });
+      autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
     } else if (action === 'history') {
       if (!userHistory[userId] || userHistory[userId].length === 0) {
-        await bot.sendMessage(chatId, `📑 ${userMention}, tu historial está vacío. Verifica una lista primero.${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: messageId, ...mainMenu });
+        const message = await bot.sendMessage(chatId, `📑 ${userMention}, tu historial está vacío. Verifica una lista primero.${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: messageId, ...mainMenu });
+        autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
       } else {
         const history = userHistory[userId].slice(-5).map(h => `📡 ${escapeMarkdown(h.url)}\n${h.result.status === 'Active' || h.result.status === 'Activa' ? '✅' : '❌'} ${h.result.status}\n⏳ ${h.timestamp.toLocaleString('es-ES')}`).join('\n\n');
-        await bot.sendMessage(chatId, `📑 ${userMention}, aquí tienes tus últimas 5 verificaciones:\n\n${history}${adminMessage}`, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, reply_to_message_id: messageId, ...mainMenu });
+        const message = await bot.sendMessage(chatId, `📑 ${userMention}, aquí tienes tus últimas 5 verificaciones:\n\n${history}${adminMessage}`, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, reply_to_message_id: messageId, ...mainMenu });
+        autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
       }
     } else if (action === 'alert') {
-      await bot.sendMessage(chatId, `⏱ ${userMention}, envía un enlace IPTV seguido de los días para la alerta:\nEjemplo: http://server.com/get.php?username=xxx&password=yyy 3${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: messageId });
+      const message = await bot.sendMessage(chatId, `⏱ ${userMention}, envía un enlace IPTV seguido de los días para la alerta:\nEjemplo: http://server.com/get.php?username=xxx&password=yyy 3${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: messageId });
+      autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
     } else if (action === 'help') {
-      await bot.sendMessage(chatId, `ℹ️ ${userMention}, aquí tienes la ayuda de *${botName}* ℹ️\n\n- Envía un enlace IPTV para verificarlo.\n- Usa /iptv para el menú.\n- Gratis y sin límites.${adminMessage}`, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, reply_to_message_id: messageId, ...mainMenu });
+      const message = await bot.sendMessage(chatId, `ℹ️ ${userMention}, aquí tienes la ayuda de *${botName}* ℹ️\n\n- Envía un enlace IPTV para verificarlo.\n- Usa /iptv para el menú.\n- Gratis y sin límites.\n- Usa /guia para más detalles.${adminMessage}`, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, reply_to_message_id: messageId, ...mainMenu });
+      autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
+    } else if (action === 'stats') {
+      const response = `📊 *Estadísticas de ${botName}* para ${userMention} 📊\n\n` +
+        `🔍 *Verificaciones totales*: ${stats.totalChecks}\n` +
+        `👥 *Usuarios únicos*: ${stats.uniqueUsers.size}\n` +
+        `⏱ *Alertas activas*: ${stats.activeAlerts}\n\n` +
+        `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
+      const message = await bot.sendMessage(chatId, response, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, reply_to_message_id: messageId, ...mainMenu });
+      autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
+    } else if (action === 'clear') {
+      if (userHistory[userId]) {
+        delete userHistory[userId];
+        const message = await bot.sendMessage(chatId, `🗑 ${userMention}, tu historial de verificaciones ha sido limpiado.${adminMessage}`, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, reply_to_message_id: messageId, ...mainMenu });
+        autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
+      } else {
+        const message = await bot.sendMessage(chatId, `🗑 ${userMention}, no tienes historial para limpiar.${adminMessage}`, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, reply_to_message_id: messageId, ...mainMenu });
+        autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
+      }
     }
     await bot.answerCallbackQuery(query.id);
   } catch (error) {
     logAction('callback_error', { action, error: error.message });
-    await bot.sendMessage(chatId, `❌ ${userMention}, ocurrió un error: ${error.message}${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: messageId });
+    const message = await bot.sendMessage(chatId, `❌ ${userMention}, ocurrió un error: ${error.message}${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: messageId });
+    autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
   }
 });
 
@@ -314,29 +486,43 @@ bot.on('message', async (msg) => {
       const days = text.split(' ')[1] || null;
       const previousMessageId = replyToBot ? replyToMessage.message_id : null;
 
+      stats.totalChecks++;
+      stats.uniqueUsers.add(userId);
+      saveStats();
+
       const checking = await bot.sendMessage(chatId, `🔎 ${userMention}, verificando ${escapeMarkdown(url)}...${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: previousMessageId });
+      autoDeleteMessage(chatId, checking.message_id, ALLOWED_THREAD_ID);
+
       const result = await checkIPTVList(url);
 
       if (!userHistory[userId]) userHistory[userId] = [];
       userHistory[userId].push({ url, result, timestamp: new Date() });
 
       const { text: response, replyTo } = formatResponse(msg, result, checking.message_id);
-      await bot.sendMessage(chatId, response, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, reply_to_message_id: replyTo });
-      await bot.sendMessage(chatId, result.status === 'Active' || result.status === 'Activa' ? '✅' : '❌', { message_thread_id: ALLOWED_THREAD_ID, reply_to_message_id: replyTo });
+      const message = await bot.sendMessage(chatId, response, { parse_mode: 'Markdown', message_thread_id: ALLOWED_THREAD_ID, reply_to_message_id: replyTo });
+      autoDeleteMessage(chatId, message.message_id, ALLOWED_THREAD_ID);
+
+      const reaction = await bot.sendMessage(chatId, result.status === 'Active' || result.status === 'Activa' ? '✅' : '❌', { message_thread_id: ALLOWED_THREAD_ID, reply_to_message_id: replyTo });
+      autoDeleteMessage(chatId, reaction.message_id, ALLOWED_THREAD_ID);
 
       if (days && replyToMessage?.text?.includes('⏱')) {
         if (result.expiresAt && result.expiresAt !== 'Ilimitada') {
           alerts[userId] = { url, expiresAt: new Date(result.expiresAt), notifyDaysBefore: parseInt(days) };
-          await bot.sendMessage(chatId, `⏱ ${userMention}, alerta configurada para ${escapeMarkdown(url)} (${days} días antes).${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: replyTo });
+          stats.activeAlerts = Object.keys(alerts).length;
+          saveStats();
+          const alertMessage = await bot.sendMessage(chatId, `⏱ ${userMention}, alerta configurada para ${escapeMarkdown(url)} (${days} días antes).${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: replyTo });
+          autoDeleteMessage(chatId, alertMessage.message_id, ALLOWED_THREAD_ID);
         } else {
-          await bot.sendMessage(chatId, `❌ ${userMention}, no se puede configurar alerta: Lista ilimitada o sin fecha de expiración.${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: replyTo });
+          const errorMessage = await bot.sendMessage(chatId, `❌ ${userMention}, no se puede configurar alerta: Lista ilimitada o sin fecha de expiración.${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: replyTo });
+          autoDeleteMessage(chatId, errorMessage.message_id, ALLOWED_THREAD_ID);
         }
       }
     }
   } catch (error) {
     logAction('message_error', { userId, text, error: error.message });
     const previousMessageId = replyToBot ? replyToMessage.message_id : null;
-    await bot.sendMessage(chatId, `❌ ${userMention}, ocurrió un error: ${error.message}${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: previousMessageId });
+    const errorMessage = await bot.sendMessage(chatId, `❌ ${userMention}, ocurrió un error: ${error.message}${adminMessage}`, { message_thread_id: ALLOWED_THREAD_ID, parse_mode: 'Markdown', reply_to_message_id: previousMessageId });
+    autoDeleteMessage(chatId, errorMessage.message_id, ALLOWED_THREAD_ID);
   }
 });
 
@@ -348,11 +534,15 @@ cron.schedule('0 9 * * *', async () => {
     if (daysLeft <= notifyDaysBefore) {
       const userInfo = await bot.getChatMember(ALLOWED_CHAT_ID, userId);
       const userMention = getUserMention(userInfo.user);
-      await bot.sendMessage(ALLOWED_CHAT_ID, `⏱ *Alerta* para ${userMention}:\n${escapeMarkdown(url)} expira en ${daysLeft} días (${expiresAt.toLocaleString('es-ES')}).${adminMessage}`, {
+      const message = await bot.sendMessage(ALLOWED_CHAT_ID, `⏱ *Alerta* para ${userMention}:\n${escapeMarkdown(url)} expira en ${daysLeft} días (${expiresAt.toLocaleString('es-ES')}).${adminMessage}`, {
         message_thread_id: ALLOWED_THREAD_ID,
         parse_mode: 'Markdown'
       });
-      await bot.sendMessage(ALLOWED_CHAT_ID, `⚠️`, { message_thread_id: ALLOWED_THREAD_ID });
+      autoDeleteMessage(ALLOWED_CHAT_ID, message.message_id, ALLOWED_THREAD_ID);
+
+      const reaction = await bot.sendMessage(ALLOWED_CHAT_ID, `⚠️`, { message_thread_id: ALLOWED_THREAD_ID });
+      autoDeleteMessage(ALLOWED_CHAT_ID, reaction.message_id, ALLOWED_THREAD_ID);
+
       logAction('alerta_enviada', { userId, url, daysLeft });
     }
   }
