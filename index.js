@@ -18,12 +18,13 @@ app.use(express.json());
 // Configuración del webhook
 const webhookUrl = 'https://entrelinks.onrender.com'; // Ajusta si tu URL de Render cambia
 
-// ID del canal permitido
+// IDs permitidos
 const ALLOWED_CHAT_ID = '-1002348662107';
+const ALLOWED_THREAD_ID = '53411'; // Thread del canal
 
 // Almacenar datos
-let userHistory = {}; // { userId: [{ url, result, timestamp }] } - Historial
-let alerts = {}; // { userId: { url, expiresAt, notifyDaysBefore } } - Alertas
+let userHistory = {}; // { userId: [{ url, result, timestamp }] }
+let alerts = {}; // { userId: { url, expiresAt, notifyDaysBefore } }
 const logsFile = 'bot_logs.json';
 
 // Inicializar el archivo de logs si no existe
@@ -74,9 +75,9 @@ async function setWebhookWithRetry() {
   }
 }
 
-// Función para verificar si el mensaje proviene del canal permitido
-function isAllowedChat(chatId) {
-  return String(chatId) === ALLOWED_CHAT_ID;
+// Función para verificar si el mensaje proviene del canal y thread permitidos
+function isAllowedContext(chatId, threadId) {
+  return String(chatId) === ALLOWED_CHAT_ID && String(threadId) === ALLOWED_THREAD_ID;
 }
 
 // Función para verificar listas IPTV
@@ -88,7 +89,7 @@ async function checkIPTVList(url) {
       const server = url.split('/get.php')[0];
       const apiUrl = `${server}/player_api.php?username=${username}&password=${password}`;
       const response = await axios.get(apiUrl, { timeout: 5000 });
-      const { user_info, server_info } = response.data;
+      const { user_info } = response.data;
 
       const quality = user_info.max_connections > 1 ? '1080p (estable)' : '720p (posible buffering)';
       return {
@@ -140,148 +141,255 @@ function generateProgressBar(progress, total) {
   return `📊 [${'█'.repeat(filled)}${'-'.repeat(empty)}] ${Math.round((progress / total) * 100)}%`;
 }
 
-// Comando /start
-bot.onText(/\/start/, async (msg) => {
+// Menú principal con botones
+const mainMenu = {
+  inline_keyboard: [
+    [
+      { text: '🔍 Verificar Lista', callback_data: 'verificar' },
+      { text: '📦 Verificar Múltiples', callback_data: 'masivo' }
+    ],
+    [
+      { text: '📜 Historial', callback_data: 'historial' },
+      { text: '⏰ Alerta', callback_data: 'alerta' }
+    ],
+    [
+      { text: '📤 Exportar', callback_data: 'exportar' },
+      { text: '📺 Filtrar Canales', callback_data: 'filtrar' }
+    ]
+  ]
+};
+
+// Comando /iptv: Menú principal
+bot.onText(/\/iptv/, async (msg) => {
   const chatId = msg.chat.id;
-  if (!isAllowedChat(chatId)) {
-    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
+  const threadId = msg.message_thread_id || '0';
+  if (!isAllowedContext(chatId, threadId)) {
+    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107/53411\n\n📢 *Grupos Entre Hijos*`, {
+      message_thread_id: threadId
+    });
     return;
   }
 
   const welcomeMessage = `👋 ¡Bienvenido a *EntreCheck_iptv*! 👋\n\n` +
-    `Soy tu herramienta para verificar y gestionar listas IPTV de forma segura y eficiente.\n\n` +
-    `📋 *Comandos disponibles:*\n` +
-    `/check <url> - Verifica una lista IPTV\n` +
-    `/bulk <urls> - Analiza múltiples listas (separadas por comas)\n` +
-    `/history - Revisa tu historial\n` +
-    `/alert <url> <días> - Configura alertas de caducidad\n` +
-    `/export <url> - Genera enlace para apps como VLC\n` +
-    `/filters <url> <categoría> - Filtra canales por categoría\n\n` +
-    `📢 *EntreCheck IPTV Team*`;
-  await bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
-});
-
-// Comando /check: Verificar una lista IPTV
-bot.onText(/\/check (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  if (!isAllowedChat(chatId)) {
-    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
-    return;
-  }
-
-  const url = match[1];
-  const checkingMessage = await bot.sendMessage(chatId, `🔍 Verificando ${url}...\n${generateProgressBar(0, 1)}`);
-  const result = await checkIPTVList(url);
-
-  if (!userHistory[userId]) userHistory[userId] = [];
-  userHistory[userId].push({ url, result, timestamp: new Date() });
-
-  const responseMessage = `✅ Resultado:\n\n` +
-    `📡 Tipo: ${result.type}\n` +
-    `Estado: ${result.status}\n` +
-    (result.username ? `👤 Usuario: ${result.username}\n🔑 Contraseña: ${result.password}\n🌐 Servidor: ${result.server}\n` : '') +
-    (result.createdAt ? `📅 Creada: ${result.createdAt}\n⏰ Expira: ${result.expiresAt}\n` : '') +
-    (result.channels ? `📺 Canales: ${result.channels}\n` : '') +
-    (result.maxConnections ? `🔗 Conexiones máx.: ${result.maxConnections}\n🔌 Activas: ${result.activeConnections}\n` : '') +
-    `📽 Calidad: ${result.quality || 'Desconocida'}\n` +
-    `⚠️ Riesgo: ${result.risk || 'Sin datos'}\n` +
-    (result.error ? `❌ Error: ${result.error}\n` : '') +
-    `\n📢 *EntreCheck IPTV Team*`;
-
-  const keyboard = {
-    inline_keyboard: [
-      [{ text: '📺 Canales', callback_data: `channels_${url}` }, { text: '🔄 Reanalizar', callback_data: `recheck_${url}` }],
-      [{ text: '📤 Exportar', callback_data: `export_${url}` }]
-    ]
-  };
-  await bot.editMessageText(responseMessage, {
-    chat_id: chatId,
-    message_id: checkingMessage.message_id,
+    `Selecciona una opción para gestionar tus listas IPTV:\n\n` +
+    `📢 *Grupos Entre Hijos*`;
+  await bot.sendMessage(chatId, welcomeMessage, {
     parse_mode: 'Markdown',
-    reply_markup: keyboard
+    reply_markup: mainMenu,
+    message_thread_id: ALLOWED_THREAD_ID
   });
-  logAction('check', { userId, url, status: result.status });
 });
 
-// Comando /bulk: Verificación masiva
-bot.onText(/\/bulk (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  if (!isAllowedChat(chatId)) {
-    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
+// Manejo de botones y subcomandos
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+  const threadId = query.message.message_thread_id || '0';
+  const userId = query.from.id;
+
+  if (!isAllowedContext(chatId, threadId)) {
+    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107/53411\n\n📢 *Grupos Entre Hijos*`, {
+      message_thread_id: threadId
+    });
     return;
   }
 
-  const urls = match[1].split(',').map(url => url.trim());
-  const total = urls.length;
+  const action = query.data;
 
-  const progressMessage = await bot.sendMessage(chatId, `🔍 Verificando ${total} listas...\n${generateProgressBar(0, total)}`);
-  let processed = 0;
-  let results = [];
+  if (action === 'verificar') {
+    await bot.sendMessage(chatId, `🔍 Escribe la URL de la lista IPTV que deseas verificar:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy\n\n📢 *Grupos Entre Hijos*`, {
+      message_thread_id: ALLOWED_THREAD_ID,
+      reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+    });
+  } else if (action === 'masivo') {
+    await bot.sendMessage(chatId, `📦 Escribe las URLs de las listas IPTV separadas por comas:\nEjemplo: url1, url2, url3\n\n📢 *Grupos Entre Hijos*`, {
+      message_thread_id: ALLOWED_THREAD_ID,
+      reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+    });
+  } else if (action === 'historial') {
+    if (!userHistory[userId] || userHistory[userId].length === 0) {
+      await bot.sendMessage(chatId, `ℹ️ No tienes historial de verificaciones.\n\n📢 *Grupos Entre Hijos*`, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+      });
+    } else {
+      const historyMessage = `📜 Historial (últimas 5):\n\n` +
+        userHistory[userId].slice(-5).map(h =>
+          `📡 ${h.url}\nEstado: ${h.result.status}\n⏰ ${h.timestamp.toLocaleString('es-ES')}\n`
+        ).join('\n') +
+        `\n📢 *Grupos Entre Hijos*`;
+      await bot.sendMessage(chatId, historyMessage, {
+        parse_mode: 'Markdown',
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+      });
+    }
+  } else if (action === 'alerta') {
+    await bot.sendMessage(chatId, `⏰ Escribe la URL y los días antes de avisar:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy 3\n\n📢 *Grupos Entre Hijos*`, {
+      message_thread_id: ALLOWED_THREAD_ID,
+      reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+    });
+  } else if (action === 'exportar') {
+    await bot.sendMessage(chatId, `📤 Escribe la URL de la lista IPTV a exportar:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy\n\n📢 *Grupos Entre Hijos*`, {
+      message_thread_id: ALLOWED_THREAD_ID,
+      reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+    });
+  } else if (action === 'filtrar') {
+    await bot.sendMessage(chatId, `📺 Escribe la URL y la categoría a filtrar:\nEjemplo: http://servidor.com/get.php?username=xxx&password=yyy deportes\n\n📢 *Grupos Entre Hijos*`, {
+      message_thread_id: ALLOWED_THREAD_ID,
+      reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+    });
+  } else if (action === 'volver') {
+    await bot.editMessageText(`👋 ¡Bienvenido a *EntreCheck_iptv*! 👋\n\nSelecciona una opción:\n\n📢 *Grupos Entre Hijos*`, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: 'Markdown',
+      reply_markup: mainMenu
+    });
+  }
 
-  for (const url of urls) {
+  await bot.answerCallbackQuery(query.id);
+});
+
+// Respuesta a mensajes después de seleccionar una opción
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const threadId = msg.message_thread_id || '0';
+  const userId = msg.from.id;
+
+  if (!isAllowedContext(chatId, threadId) || !msg.reply_to_message || msg.text.startsWith('/')) return;
+
+  const replyText = msg.reply_to_message.text;
+
+  // Verificar Lista
+  if (replyText.includes('🔍 Escribe la URL')) {
+    const url = msg.text;
+    const checkingMessage = await bot.sendMessage(chatId, `🔍 Verificando ${url}...\n${generateProgressBar(0, 1)}`, {
+      message_thread_id: ALLOWED_THREAD_ID
+    });
     const result = await checkIPTVList(url);
-    results.push({ url, status: result.status });
-    processed++;
-    await bot.editMessageText(
-      `🔍 Progreso: ${processed}/${total}\n${generateProgressBar(processed, total)}`,
-      { chat_id: chatId, message_id: progressMessage.message_id }
-    );
-    await new Promise(resolve => setTimeout(resolve, 100));
+
+    if (!userHistory[userId]) userHistory[userId] = [];
+    userHistory[userId].push({ url, result, timestamp: new Date() });
+
+    const responseMessage = `✅ Resultado:\n\n` +
+      `📡 Tipo: ${result.type}\n` +
+      `Estado: ${result.status}\n` +
+      (result.username ? `👤 Usuario: ${result.username}\n🔑 Contraseña: ${result.password}\n🌐 Servidor: ${result.server}\n` : '') +
+      (result.createdAt ? `📅 Creada: ${result.createdAt}\n⏰ Expira: ${result.expiresAt}\n` : '') +
+      (result.channels ? `📺 Canales: ${result.channels}\n` : '') +
+      (result.maxConnections ? `🔗 Conexiones máx.: ${result.maxConnections}\n🔌 Activas: ${result.activeConnections}\n` : '') +
+      `📽 Calidad: ${result.quality || 'Desconocida'}\n` +
+      `⚠️ Riesgo: ${result.risk || 'Sin datos'}\n` +
+      (result.error ? `❌ Error: ${result.error}\n` : '') +
+      `\n📢 *Grupos Entre Hijos*`;
+
+    await bot.editMessageText(responseMessage, {
+      chat_id: chatId,
+      message_id: checkingMessage.message_id,
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+    });
+    logAction('verificar', { userId, url, status: result.status });
   }
 
-  if (!userHistory[userId]) userHistory[userId] = [];
-  userHistory[userId].push(...results.map(r => ({ url: r.url, result: { status: r.status }, timestamp: new Date() })));
+  // Verificar Múltiples
+  if (replyText.includes('📦 Escribe las URLs')) {
+    const urls = msg.text.split(',').map(url => url.trim());
+    const total = urls.length;
+    const progressMessage = await bot.sendMessage(chatId, `📦 Verificando ${total} listas...\n${generateProgressBar(0, total)}`, {
+      message_thread_id: ALLOWED_THREAD_ID
+    });
+    let processed = 0;
+    let results = [];
 
-  const finalMessage = `✅ Resultados:\n\n` +
-    results.map(r => `📡 ${r.url}: ${r.status}`).join('\n') +
-    `\n\n📢 *EntreCheck IPTV Team*`;
-  await bot.editMessageText(finalMessage, { chat_id: chatId, message_id: progressMessage.message_id, parse_mode: 'Markdown' });
-  logAction('bulk', { userId, urls, processed });
-});
+    for (const url of urls) {
+      const result = await checkIPTVList(url);
+      results.push({ url, status: result.status });
+      processed++;
+      await bot.editMessageText(
+        `📦 Progreso: ${processed}/${total}\n${generateProgressBar(processed, total)}`,
+        { chat_id: chatId, message_id: progressMessage.message_id }
+      );
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
 
-// Comando /history: Mostrar historial
-bot.onText(/\/history/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  if (!isAllowedChat(chatId)) {
-    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
-    return;
+    if (!userHistory[userId]) userHistory[userId] = [];
+    userHistory[userId].push(...results.map(r => ({ url: r.url, result: { status: r.status }, timestamp: new Date() })));
+
+    const finalMessage = `✅ Resultados:\n\n` +
+      results.map(r => `📡 ${r.url}: ${r.status}`).join('\n') +
+      `\n\n📢 *Grupos Entre Hijos*`;
+    await bot.editMessageText(finalMessage, {
+      chat_id: chatId,
+      message_id: progressMessage.message_id,
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+    });
+    logAction('masivo', { userId, urls, processed });
   }
 
-  if (!userHistory[userId] || userHistory[userId].length === 0) {
-    await bot.sendMessage(chatId, 'ℹ️ No tienes historial de verificaciones.\n\n📢 *EntreCheck IPTV Team*');
-    return;
+  // Alerta
+  if (replyText.includes('⏰ Escribe la URL')) {
+    const [url, daysBefore] = msg.text.split(' ');
+    const days = parseInt(daysBefore);
+    const result = await checkIPTVList(url);
+
+    if (result.expiresAt) {
+      alerts[userId] = { url, expiresAt: new Date(result.expiresAt), notifyDaysBefore: days };
+      await bot.sendMessage(chatId, `⏰ Alerta configurada para ${url}. Te avisaré ${days} días antes.\n\n📢 *Grupos Entre Hijos*`, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+      });
+      logAction('alerta', { userId, url, daysBefore: days });
+    } else {
+      await bot.sendMessage(chatId, `❌ No se pudo configurar: sin fecha de expiración.\n\n📢 *Grupos Entre Hijos*`, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+      });
+    }
   }
 
-  const historyMessage = `📜 Historial (últimas 5):\n\n` +
-    userHistory[userId].slice(-5).map(h =>
-      `📡 ${h.url}\nEstado: ${h.result.status}\n⏰ ${h.timestamp.toLocaleString('es-ES')}\n`
-    ).join('\n') +
-    `\n📢 *EntreCheck IPTV Team*`;
-  await bot.sendMessage(chatId, historyMessage, { parse_mode: 'Markdown' });
-});
+  // Exportar
+  if (replyText.includes('📤 Escribe la URL')) {
+    const url = msg.text;
+    const result = await checkIPTVList(url);
 
-// Comando /alert: Configurar alertas
-bot.onText(/\/alert (.+) (\d+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  if (!isAllowedChat(chatId)) {
-    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
-    return;
+    if (result.status === 'Activa' || result.status === 'active') {
+      await bot.sendMessage(chatId, `📤 Lista exportada:\n${url}\nCompatible con VLC, IPTV Smarters, TiviMate.\n\n📢 *Grupos Entre Hijos*`, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+      });
+      logAction('exportar', { userId, url });
+    } else {
+      await bot.sendMessage(chatId, `❌ No se puede exportar: lista no activa.\n\n📢 *Grupos Entre Hijos*`, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+      });
+    }
   }
 
-  const url = match[1];
-  const daysBefore = parseInt(match[2]);
+  // Filtrar Canales
+  if (replyText.includes('📺 Escribe la URL')) {
+    const [url, category] = msg.text.split(' ');
+    const result = await checkIPTVList(url);
 
-  const result = await checkIPTVList(url);
-  if (result.expiresAt) {
-    alerts[userId] = { url, expiresAt: new Date(result.expiresAt), notifyDaysBefore: daysBefore };
-    await bot.sendMessage(chatId, `⏰ Alerta configurada para ${url}. Te avisaré ${daysBefore} días antes.\n\n📢 *EntreCheck IPTV Team*`);
-    logAction('alert_set', { userId, url, daysBefore });
-  } else {
-    await bot.sendMessage(chatId, `❌ No se pudo configurar: sin fecha de expiración.\n\n📢 *EntreCheck IPTV Team*`);
+    if (result.type === 'Xtream Codes' && result.status === 'active') {
+      const apiUrl = `${result.server}/player_api.php?username=${result.username}&password=${result.password}&action=get_live_streams`;
+      const streams = (await axios.get(apiUrl)).data;
+      const filtered = streams.filter(s => s.category_name.toLowerCase().includes(category.toLowerCase()));
+      const filterMessage = `📺 "${category}":\n\n` +
+        filtered.slice(0, 5).map(s => `📡 ${s.name}`).join('\n') +
+        `\nTotal: ${filtered.length}\n\n📢 *Grupos Entre Hijos*`;
+      await bot.sendMessage(chatId, filterMessage, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+      });
+    } else {
+      await bot.sendMessage(chatId, `❌ No se puede filtrar: lista incompatible o inactiva.\n\n📢 *Grupos Entre Hijos*`, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        reply_markup: { inline_keyboard: [[{ text: '⬅️ Retroceder', callback_data: 'volver' }]] }
+      });
+    }
   }
 });
 
@@ -291,87 +399,13 @@ cron.schedule('0 9 * * *', async () => {
     const { url, expiresAt, notifyDaysBefore } = alerts[userId];
     const daysLeft = Math.ceil((expiresAt - new Date()) / (1000 * 60 * 60 * 24));
     if (daysLeft <= notifyDaysBefore) {
-      await bot.sendMessage(ALLOWED_CHAT_ID, `⏰ Alerta para <@${userId}>: ${url} expira en ${daysLeft} días (${expiresAt.toLocaleString('es-ES')}).\n\n📢 *EntreCheck IPTV Team*`, { parse_mode: 'Markdown' });
-      logAction('alert_triggered', { userId, url, daysLeft });
+      await bot.sendMessage(ALLOWED_CHAT_ID, `⏰ Alerta para <@${userId}>: ${url} expira en ${daysLeft} días (${expiresAt.toLocaleString('es-ES')}).\n\n📢 *Grupos Entre Hijos*`, {
+        message_thread_id: ALLOWED_THREAD_ID,
+        parse_mode: 'Markdown'
+      });
+      logAction('alerta_enviada', { userId, url, daysLeft });
     }
   }
-});
-
-// Comando /export: Exportar lista
-bot.onText(/\/export (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  if (!isAllowedChat(chatId)) {
-    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
-    return;
-  }
-
-  const url = match[1];
-  const result = await checkIPTVList(url);
-
-  if (result.status === 'Activa' || result.status === 'active') {
-    await bot.sendMessage(chatId, `📤 Lista exportada:\n${url}\nCompatible con VLC, IPTV Smarters, TiviMate.\n\n📢 *EntreCheck IPTV Team*`);
-    logAction('export', { userId: msg.from.id, url });
-  } else {
-    await bot.sendMessage(chatId, `❌ No se puede exportar: lista no activa.\n\n📢 *EntreCheck IPTV Team*`);
-  }
-});
-
-// Comando /filters: Filtrar canales (solo Xtream Codes por ahora)
-bot.onText(/\/filters (.+) (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  if (!isAllowedChat(chatId)) {
-    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
-    return;
-  }
-
-  const url = match[1];
-  const category = match[2].toLowerCase();
-
-  const result = await checkIPTVList(url);
-  if (result.type === 'Xtream Codes' && result.status === 'active') {
-    const apiUrl = `${result.server}/player_api.php?username=${result.username}&password=${result.password}&action=get_live_streams`;
-    const streams = (await axios.get(apiUrl)).data;
-    const filtered = streams.filter(s => s.category_name.toLowerCase().includes(category));
-    const filterMessage = `📺 "${category}":\n\n` +
-      filtered.slice(0, 5).map(s => `📡 ${s.name}`).join('\n') +
-      `\nTotal: ${filtered.length}\n\n📢 *EntreCheck IPTV Team*`;
-    await bot.sendMessage(chatId, filterMessage);
-  } else {
-    await bot.sendMessage(chatId, `❌ No se puede filtrar: lista incompatible o inactiva.\n\n📢 *EntreCheck IPTV Team*`);
-  }
-});
-
-// Manejo de botones interactivos
-bot.on('callback_query', async (query) => {
-  const chatId = query.message.chat.id;
-  const userId = query.from.id;
-  if (!isAllowedChat(chatId)) {
-    await bot.sendMessage(chatId, `🚫 Este bot solo funciona en el canal oficial: https://t.me/c/2348662107\n\n📢 *EntreCheck IPTV Team*`);
-    return;
-  }
-
-  const [action, url] = query.data.split('_');
-
-  if (action === 'channels') {
-    const result = await checkIPTVList(url);
-    if (result.type === 'Xtream Codes' && result.status === 'active') {
-      const apiUrl = `${result.server}/player_api.php?username=${result.username}&password=${result.password}&action=get_live_streams`;
-      const streams = (await axios.get(apiUrl)).data.slice(0, 5);
-      const channelsMessage = `📺 Primeros 5 canales:\n\n` +
-        streams.map(s => `📡 ${s.name}`).join('\n') +
-        `\nTotal: ${result.channels}\n\n📢 *EntreCheck IPTV Team*`;
-      await bot.sendMessage(chatId, channelsMessage);
-    }
-  } else if (action === 'recheck') {
-    const result = await checkIPTVList(url);
-    await bot.sendMessage(chatId, `🔄 Reanalizado ${url}:\nEstado: ${result.status}\n\n📢 *EntreCheck IPTV Team*`);
-    if (!userHistory[userId]) userHistory[userId] = [];
-    userHistory[userId].push({ url, result, timestamp: new Date() });
-  } else if (action === 'export') {
-    await bot.sendMessage(chatId, `📤 Exportado:\n${url}\n\n📢 *EntreCheck IPTV Team*`);
-  }
-
-  await bot.answerCallbackQuery(query.id);
 });
 
 console.log('🚀 EntreCheck_iptv iniciado correctamente 🎉');
