@@ -58,11 +58,11 @@ async function autoDeleteMessage(chatId, messageId, threadId) {
   }, 300000);
 }
 
-// Animación de carga (optimizada para rapidez)
+// Animación de carga
 async function showLoadingAnimation(chatId, threadId, messageId, baseText) {
   const frames = ['🔍', '⏳', '🔎'];
   let frameIndex = 0;
-  const duration = 1000; // 1 segundo
+  const duration = 1000;
   const interval = 500;
   const steps = Math.floor(duration / interval);
 
@@ -132,12 +132,26 @@ function getAllowedThreadId(chatId) {
   return group ? group.threadId : null;
 }
 
+// Añadir puerto predeterminado si falta
+function ensurePort(url) {
+  if (!url.startsWith('http')) url = `http://${url}`;
+  const urlObj = new URL(url);
+  if (!urlObj.port) urlObj.port = '80';
+  return urlObj.toString();
+}
+
+// Validar formato de enlace IPTV
+function isValidIPTVFormat(url) {
+  return url.includes('get.php') || // Xtream
+         url.endsWith('.m3u') || url.endsWith('.m3u8') || // M3U/M3U8
+         url.endsWith('.ts') || url.includes('hls'); // TS/HLS
+}
+
 // Verificar lista IPTV
 async function checkIPTVList(url, userId) {
   logAction('check_start', { url });
   try {
-    url = url.trim();
-    if (!url.startsWith('http')) url = `http://${url}`;
+    url = ensurePort(url.trim());
     const timeout = userConfigs[userId]?.timeout || 3000;
 
     if (url.includes('get.php')) {
@@ -207,7 +221,7 @@ async function checkIPTVList(url, userId) {
       };
     }
 
-    if (url.endsWith('.ts') || url.includes('live') || url.includes('hls')) {
+    if (url.endsWith('.ts') || url.includes('hls')) {
       const response = await axios.head(url, { timeout });
       logAction('check_direct_success', { url });
       return {
@@ -218,14 +232,7 @@ async function checkIPTVList(url, userId) {
       };
     }
 
-    const response = await axios.head(url, { timeout });
-    logAction('check_generic_success', { url });
-    return {
-        type: 'Genérico',
-        status: response.status === 200 ? 'Activa' : 'Inactiva',
-        totalChannels: 1,
-        server: url.split('/').slice(0, 3).join('/')
-    };
+    throw new Error('Formato no soportado');
   } catch (error) {
     const errorMsg = error.response?.status === 404 ? 'Servidor no encontrado (404)' : error.message.includes('timeout') ? 'Tiempo agotado' : 'Error al verificar';
     logAction('check_error', { url, error: errorMsg });
@@ -261,7 +268,7 @@ function formatResponse(msg, result) {
     `📺 *Canales*: ${result.totalChannels || 0}\n` +
     `🌐 *Servidor Real*: ${serverReal}\n` +
     `⏲ *Zona horaria*: ${result.timezone || 'No disponible'}\n\n` +
-    `🚀 *${botName} - 100% Gratis*${adminMessage}`;
+    `🚀 *${botName} - Verificación Profesional y Gratuita*${adminMessage}`;
 
   return { text: response };
 }
@@ -296,7 +303,7 @@ bot.on('callback_query', async (query) => {
 
     if (query.data === 'check') {
       userStates[userId].action = 'check';
-      await bot.editMessageText(`🔎 ${userMention}, envía un enlace IPTV (M3U, Xtream, TS, etc.): 📡${adminMessage}`, {
+      await bot.editMessageText(`🔎 ${userMention}, envía un enlace IPTV válido (M3U, Xtream, TS, etc.): 📡${adminMessage}`, {
         chat_id: chatId,
         message_id: messageId,
         message_thread_id: allowedThreadId,
@@ -322,7 +329,7 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// Comando /iptv
+// Comando /iptv (inicio)
 bot.onText(/\/iptv/, async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
@@ -332,8 +339,10 @@ bot.onText(/\/iptv/, async (msg) => {
   if (!isAllowedContext(chatId, threadId)) return;
 
   const response = `🌟 ¡Hola ${userMention}! Bienvenido a *${botName}* 🌟\n\n` +
-    `Verifica tus listas IPTV gratis y rápido. Usa los botones o envía un enlace.\n` +
-    `Explora con /guia para más info.${adminMessage}`;
+    `✅ Verifica tus listas IPTV de forma gratuita y rápida.\n` +
+    `🔧 Usa los botones o envía un enlace válido directamente.\n` +
+    `ℹ️ Pulsa "Ayuda" para aprender a usarme.\n\n` +
+    `👨‍💼 *Equipo de Administración EntresHijos*`;
   const message = await bot.sendMessage(chatId, response, {
     parse_mode: 'Markdown',
     message_thread_id: allowedThreadId,
@@ -343,7 +352,7 @@ bot.onText(/\/iptv/, async (msg) => {
   autoDeleteMessage(chatId, message.message_id, allowedThreadId);
 });
 
-// Comando /guia
+// Comando /guia (ayuda)
 bot.onText(/\/guia/, async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
@@ -354,20 +363,19 @@ bot.onText(/\/guia/, async (msg) => {
 
   const helpMessage = `📖 *Guía de ${botName}* para ${userMention} 📖\n\n` +
     `✨ *¿Qué soy?*\n` +
-    `Un bot gratuito exclusivo para EntresHijos, que verifica listas IPTV rápido y fácil.\n\n` +
+    `Un bot gratuito exclusivo para EntresHijos que verifica listas IPTV de manera rápida y profesional.\n\n` +
     `🔧 *¿Cómo usarme?*\n` +
-    `- Pulsa "Verificar Lista" o envía un enlace directamente.\n` +
-    `- Obtén un informe detallado al instante.\n` +
-    `- Mensajes se borran tras 5 min.\n\n` +
+    `- Haz clic en "Verificar Lista" o envía un enlace IPTV válido.\n` +
+    `- Recibe un informe detallado al instante.\n` +
+    `- Los mensajes se eliminan tras 5 minutos para mantener el chat limpio.\n\n` +
     `📋 *Formatos compatibles*:\n` +
-    `- *Xtream*: http://server.com/get.php?username=xxx&password=yyy\n` +
-    `- *M3U/M3U8*: http://server.com/playlist.m3u\n` +
-    `- *TS/HLS*: http://server.com/stream.ts\n` +
-    `- *Otros*: Si es URL, lo intento.\n\n` +
-    `💡 *Pasos*:\n` +
+    `- *Xtream*: \`http://server.com:80/get.php?username=xxx&password=yyy\`\n` +
+    `- *M3U/M3U8*: \`http://server.com:80/playlist.m3u\`\n` +
+    `- *TS/HLS*: \`http://server.com:80/stream.ts\`\n\n` +
+    `💡 *Pasos sencillos*:\n` +
     `1. Usa "Verificar Lista" o envía tu enlace.\n` +
-    `2. ¡Listo! Respuesta profesional al momento.\n\n` +
-    `🚀 *Gratis y Entre 😉 fácil*${adminMessage}`;
+    `2. Obtén una respuesta clara y rápida.\n\n` +
+    `🚀 *${botName} - Verificación Gratuita y Profesional*${adminMessage}`;
 
   const message = await bot.sendMessage(chatId, helpMessage, {
     parse_mode: 'Markdown',
@@ -391,10 +399,27 @@ bot.on('message', async (msg) => {
 
   if (!userStates[userId]) userStates[userId] = {};
 
-  const isIPTV = text.match(/(http|https):\/\/[^\s]+/) || text.includes('get.php') || text.includes('.m3u') || text.includes('.m3u8') || text.includes('.ts') || text.includes('hls');
+  const urlMatch = text.match(/(http|https):\/\/[^\s]+/);
+  if ((userStates[userId].action === 'check' || !userStates[userId].action) && urlMatch) {
+    const url = urlMatch[0];
 
-  if ((userStates[userId].action === 'check' || !userStates[userId].action) && isIPTV) {
-    const url = text.match(/(http|https):\/\/[^\s]+/)?.[0] || text;
+    if (!isValidIPTVFormat(url)) {
+      const invalidMessage = `📢 Hola ${userMention}, el formato del enlace no es válido 📢\n\n` +
+        `❌ El enlace proporcionado no corresponde a una lista IPTV soportada.\n` +
+        `✅ *Formatos aceptados*:\n` +
+        `- *Xtream*: \`http://server.com:80/get.php?username=xxx&password=yyy\`\n` +
+        `- *M3U/M3U8*: \`http://server.com:80/playlist.m3u\`\n` +
+        `- *TS/HLS*: \`http://server.com:80/stream.ts\`\n\n` +
+        `🔧 Por favor, envía un enlace en uno de estos formatos.\n` +
+        `🚀 *${botName} - Verificación Profesional*${adminMessage}`;
+      const message = await bot.sendMessage(chatId, invalidMessage, {
+        parse_mode: 'Markdown',
+        message_thread_id: allowedThreadId,
+        ...mainMenu
+      });
+      autoDeleteMessage(chatId, message.message_id, allowedThreadId);
+      return;
+    }
 
     const checkingMessage = await bot.sendMessage(chatId, `🔎 ${userMention}, verificando ${escapeMarkdown(url)}...${adminMessage}`, {
       parse_mode: 'Markdown',
@@ -434,6 +459,6 @@ setInterval(() => {
   axios.get('https://entrelinks.onrender.com')
     .then(() => logAction('keep_alive', { status: 'success' }))
     .catch(error => logAction('keep_alive_error', { error: error.message }));
-}, 5 * 60 * 1000); // Cada 5 minutos, compatible con UptimeRobot
+}, 5 * 60 * 1000);
 
 module.exports = bot;
