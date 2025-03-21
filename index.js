@@ -1,7 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const cron = require('node-cron');
-const fs = require('fs');
 const axios = require('axios');
 const cheerio = require('cheerio');
 
@@ -18,151 +17,16 @@ app.use(express.json());
 // Webhook
 const webhookUrl = 'https://entrelinks.onrender.com';
 
-// IDs permitidos y estado de grupos
+// IDs permitidos y estado de grupos (eliminamos la lógica de activación/desactivación)
 const ALLOWED_CHAT_IDS = [
-  { chatId: '-1002348662107', threadId: '53411', name: 'EntresHijos', active: true },
-  { chatId: '-1002565012502', threadId: null, name: 'BotChecker_IPTV_ParaG', active: true }
+  { chatId: '-1002348662107', threadId: '53411', name: 'EntresHijos' },
+  { chatId: '-1002565012502', threadId: null, name: 'BotChecker_IPTV_ParaG' }
 ];
 
 // Almacenar datos
 let userHistory = {};
 let commandHistory = {}; // Historial de comandos para navegación
 let alerts = {};
-let stats = { totalChecks: 0, uniqueUsers: new Set(), activeAlerts: 0 };
-const logsFile = 'bot_logs.json';
-const statsFile = 'bot_stats.json';
-
-// Logs de render (proporcionados)
-const renderLogs = `==> Cloning from https://github.com/xavirmyx/Entrelinks
-==> Checking out commit 1100dd828cd5bee7fa9d716294b4f673a7e9b2a0 in branch main
-==> Using Node.js version 22.12.0 (default)
-==> Docs on specifying a Node.js version: https://render.com/docs/node-version
-==> Using Bun version 1.1.0 (default)
-==> Docs on specifying a bun version: https://render.com/docs/bun-version
-==> Running build command 'npm install'...
-added 246 packages, and audited 247 packages in 3s
-91 packages are looking for funding
-  run \`npm fund\` for details
-5 moderate severity vulnerabilities
-To address all issues (including breaking changes), run:
-  npm audit fix --force
-Run \`npm audit\` for details.
-==> Uploading build...
-==> Uploaded in 5.0s. Compression took 1.3s
-==> Build successful 🎉
-==> Deploying...
-==> Running 'npm start'
-> entrecheck-iptv@1.0.0 start
-> node index.js
-🚀 EntreCheck_iptv iniciado 🎉
-🚀 Servidor en puerto 10000
-==> Your service is live 🎉
-[21/3/2025, 0:36:24] webhook_set: {
-  url: 'https://entrelinks.onrender.com/bot7861676131:AAFLv4dBIFiHV1OYc8BJH2U8kWPal7lpBMQ'
-}
-[21/3/2025, 0:37:06] webhook_received: {
-  update: {
-    update_id: 626025183,
-    message: {
-      message_id: 63,
-      from: [Object],
-      chat: [Object],
-      date: 1742517426,
-      text: '/iptv',
-      entities: [Array]
-    }
-  }
-}
-[21/3/2025, 0:37:23] webhook_received: {
-  update: {
-    update_id: 626025184,
-    callback_query: {
-      id: '5692892859748174876',
-      from: [Object],
-      message: [Object],
-      chat_instance: '-5858350603537914894',
-      data: 'mirrors'
-    }
-  }
-}
-[21/3/2025, 0:37:34] webhook_received: {
-  update: {
-    update_id: 626025185,
-    message: {
-      message_id: 66,
-      from: [Object],
-      chat: [Object],
-      date: 1742517454,
-      text: '/espejos http://185.194.217.48:25461',
-      entities: [Array],
-      link_preview_options: [Object]
-    }
-  }
-}
-[21/3/2025, 0:37:51] webhook_received: {
-  update: {
-    update_id: 626025186,
-    callback_query: {
-      id: '5692892857296112301',
-      from: [Object],
-      message: [Object],
-      chat_instance: '-5858350603537914894',
-      data: 'navigate_next_1'
-    }
-  }
-}
-[21/3/2025, 0:37:53] webhook_received: {
-  update: {
-    update_id: 626025187,
-    callback_query: {
-      id: '5692892859095131219',
-      from: [Object],
-      message: [Object],
-      chat_instance: '-5858350603537914894',
-      data: 'navigate_next_2'
-    }
-  }
-}
-[21/3/2025, 0:38:14] webhook_received: {
-  update: {
-    update_id: 626025188,
-    callback_query: {
-      id: '5692892858144769577',
-      from: [Object],
-      message: [Object],
-      chat_instance: '-5858350603537914894',
-      data: 'navigate_prev_2'
-    }
-  }
-}
-[21/3/2025, 0:38:44] webhook_received: {
-  update: {
-    update_id: 626025190,
-    message: {
-      message_id: 68,
-      from: [Object],
-      chat: [Object],
-      date: 1742517497,
-      text: '/logs',
-      entities: [Array]
-    }
-  }
-}
-[21/3/2025, 0:38:44] webhook_received: {
-  update: {
-    update_id: 626025189,
-    callback_query: {
-      id: '5692892860576506248',
-      from: [Object],
-      message: [Object],
-      chat_instance: '-5858350603537914894',
-      data: 'logs'
-    }
-  }
-}`;
-
-// Limitar los logs a las últimas 10 líneas para optimizar
-const renderLogsLimited = renderLogs.split('\n').slice(-10).join('\n');
 
 // Base de datos estática de espejos (como respaldo)
 const mirrorsDB = {
@@ -181,36 +45,9 @@ const mirrorsDB = {
 // Mensaje fijo
 const adminMessage = '\n\n👨‍💼 *Equipo de Administración EntresHijos*';
 
-// Inicializar logs y estadísticas
-if (!fs.existsSync(logsFile)) fs.writeFileSync(logsFile, JSON.stringify([]));
-if (!fs.existsSync(statsFile)) fs.writeFileSync(statsFile, JSON.stringify({ totalChecks: 0, uniqueUsers: [], activeAlerts: 0 }));
-
-// Cargar estadísticas con manejo de errores
-function loadStats() {
-  try {
-    const loadedStats = JSON.parse(fs.readFileSync(statsFile));
-    stats.totalChecks = loadedStats.totalChecks || 0;
-    stats.activeAlerts = loadedStats.activeAlerts || 0;
-    stats.uniqueUsers = new Set(Array.isArray(loadedStats.uniqueUsers) ? loadedStats.uniqueUsers : []);
-  } catch (error) {
-    console.error('Error al cargar estadísticas:', error.message);
-    stats = { totalChecks: 0, uniqueUsers: new Set(), activeAlerts: 0 };
-    saveStats();
-  }
-}
-
-// Guardar estadísticas
-function saveStats() {
-  const statsToSave = { ...stats, uniqueUsers: Array.from(stats.uniqueUsers) };
-  fs.writeFileSync(statsFile, JSON.stringify(statsToSave, null, 2));
-}
-
-// Registrar logs
+// Registrar logs (simplificado, solo en consola)
 function logAction(action, details) {
-  const logs = JSON.parse(fs.readFileSync(logsFile));
   const timestamp = new Date().toLocaleString('es-ES');
-  logs.push({ action, details, timestamp });
-  fs.writeFileSync(logsFile, JSON.stringify(logs, null, 2));
   console.log(`[${timestamp}] ${action}:`, details);
 }
 
@@ -235,12 +72,14 @@ async function autoDeleteMessage(chatId, messageId, threadId) {
   }, 300000); // 5 minutos = 300,000 ms
 }
 
-// Animación de "cargando" con emojis
+// Animación de "cargando" con emojis (optimizada para evitar 429)
 async function showLoadingAnimation(chatId, threadId, messageId, baseText, duration) {
   const frames = ['🔍', '⏳', '🔎'];
   let frameIndex = 0;
+  const interval = 1000; // Reducimos la frecuencia a 1 segundo por frame
+  const steps = Math.floor(duration / interval);
 
-  for (let i = 0; i < duration / 500; i++) {
+  for (let i = 0; i < steps; i++) {
     const frame = frames[frameIndex % frames.length];
     try {
       await bot.editMessageText(`${baseText} ${frame}`, {
@@ -250,11 +89,17 @@ async function showLoadingAnimation(chatId, threadId, messageId, baseText, durat
         parse_mode: 'Markdown'
       });
     } catch (error) {
+      if (error.response?.status === 429) {
+        const retryAfter = error.response.data.parameters.retry_after || 1;
+        logAction('rate_limit_error', { retryAfter });
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        continue;
+      }
       logAction('loading_animation_error', { chatId, messageId, error: error.message });
       break;
     }
     frameIndex++;
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise(resolve => setTimeout(resolve, interval));
   }
 }
 
@@ -271,10 +116,9 @@ app.get('/', (req, res) => res.send(`${botName} is running`));
 app.listen(port, async () => {
   console.log(`🚀 Servidor en puerto ${port}`);
   await setWebhookWithRetry();
-  loadStats();
 });
 
-// Configurar webhook
+// Configurar webhook con reintentos para manejar 429
 async function setWebhookWithRetry() {
   try {
     await bot.setWebHook(`${webhookUrl}/bot${token}`);
@@ -287,6 +131,7 @@ async function setWebhookWithRetry() {
       await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
       return setWebhookWithRetry();
     }
+    throw error;
   }
 }
 
@@ -294,13 +139,7 @@ async function setWebhookWithRetry() {
 function isAllowedContext(chatId, threadId) {
   const group = ALLOWED_CHAT_IDS.find(g => g.chatId === String(chatId));
   if (!group) return false;
-  if (!group.active) return false;
   return group.threadId ? String(threadId) === group.threadId : true;
-}
-
-// Obtener grupo por chatId
-function getGroup(chatId) {
-  return ALLOWED_CHAT_IDS.find(g => g.chatId === String(chatId));
 }
 
 // Generar posibles servidores espejo (simulando FastoTV)
@@ -328,6 +167,7 @@ async function generateMirrorServers(serverUrl) {
     }
     return activeMirrors;
   } catch (error) {
+    logAction('generate_mirrors_error', { error: error.message });
     return [];
   }
 }
@@ -370,6 +210,218 @@ async function searchMirrorsFromIPTVCat(serverUrl) {
     return activeMirrors;
   } catch (error) {
     logAction('iptvcat_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptv-org.github.io para buscar servidores espejo
+async function searchMirrorsFromIPTVOrg(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptv-org.github.io/iptv/index.m3u', { timeout: 5000 });
+    const lines = response.data.split('\n');
+    const mirrors = [];
+
+    for (const line of lines) {
+      if (line.startsWith('http')) {
+        try {
+          const mirrorUrl = new URL(line.trim());
+          const mirrorDomain = mirrorUrl.hostname;
+          if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+            mirrors.push(mirrorUrl.href);
+          }
+        } catch (error) {
+          // Ignorar URLs mal formadas
+        }
+      }
+    }
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvorg_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar free-iptv.github.io para buscar servidores espejo
+async function searchMirrorsFromFreeIPTV(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://free-iptv.github.io/iptv/index.m3u', { timeout: 5000 });
+    const lines = response.data.split('\n');
+    const mirrors = [];
+
+    for (const line of lines) {
+      if (line.startsWith('http')) {
+        try {
+          const mirrorUrl = new URL(line.trim());
+          const mirrorDomain = mirrorUrl.hostname;
+          if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+            mirrors.push(mirrorUrl.href);
+          }
+        } catch (error) {
+          // Ignorar URLs mal formadas
+        }
+      }
+    }
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('freeiptv_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar fluxus.to para buscar servidores espejo
+async function searchMirrorsFromFluxus(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://fluxus.to/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('fluxus_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptv-checker.com para buscar servidores espejo
+async function searchMirrorsFromIPTVChecker(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptv-checker.com/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvchecker_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptv-playlist.com para buscar servidores espejo
+async function searchMirrorsFromIPTVPlaylist(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptv-playlist.com/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvplaylist_error', { error: error.message });
     return [];
   }
 }
@@ -483,7 +535,7 @@ function formatResponse(msg, result, previousMessageId = null) {
   return { text: response, replyTo: previousMessageId };
 }
 
-// Menú principal simplificado
+// Menú principal simplificado (eliminamos botones de /stats, /limpiar, /logs)
 const mainMenu = {
   reply_markup: {
     inline_keyboard: [
@@ -494,12 +546,7 @@ const mainMenu = {
       ],
       [
         { text: '⏱ Configurar Alerta', callback_data: 'alert' },
-        { text: '🗑 Limpiar Historial', callback_data: 'clear' },
         { text: 'ℹ️ Ayuda', callback_data: 'help' }
-      ],
-      [
-        { text: '📈 Estadísticas', callback_data: 'stats' },
-        { text: '📜 Ver Logs', callback_data: 'logs' }
       ]
     ]
   }
@@ -520,58 +567,6 @@ function addNavigationButtons(userId, currentIndex) {
   };
 }
 
-// Comando /on
-bot.onText(/\/on/, async (msg) => {
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id || '0';
-  const userMention = getUserMention(msg.from);
-
-  const group = ALLOWED_CHAT_IDS.find(g => g.chatId === String(chatId));
-  if (!group) {
-    const message = await bot.sendMessage(chatId, `🚫 ${userMention}, este bot no está configurado para este grupo. 📩 Contacta al soporte.${adminMessage}`, { message_thread_id: threadId, parse_mode: 'Markdown' });
-    autoDeleteMessage(chatId, message.message_id, threadId);
-    return;
-  }
-
-  const buttons = ALLOWED_CHAT_IDS.map(g => [{
-    text: `${g.name} (${g.active ? '✅ Activo' : '❌ Inactivo'})`,
-    callback_data: `activate_group_${g.chatId}`
-  }]);
-
-  const message = await bot.sendMessage(chatId, `🟢 ${userMention}, selecciona un grupo para activar el bot: 🚀${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId,
-    reply_markup: { inline_keyboard: buttons }
-  });
-  autoDeleteMessage(chatId, message.message_id, threadId);
-});
-
-// Comando /off
-bot.onText(/\/off/, async (msg) => {
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id || '0';
-  const userMention = getUserMention(msg.from);
-
-  const group = ALLOWED_CHAT_IDS.find(g => g.chatId === String(chatId));
-  if (!group) {
-    const message = await bot.sendMessage(chatId, `🚫 ${userMention}, este bot no está configurado para este grupo. 📩 Contacta al soporte.${adminMessage}`, { message_thread_id: threadId, parse_mode: 'Markdown' });
-    autoDeleteMessage(chatId, message.message_id, threadId);
-    return;
-  }
-
-  const buttons = ALLOWED_CHAT_IDS.map(g => [{
-    text: `${g.name} (${g.active ? '✅ Activo' : '❌ Inactivo'})`,
-    callback_data: `deactivate_group_${g.chatId}`
-  }]);
-
-  const message = await bot.sendMessage(chatId, `🔴 ${userMention}, selecciona un grupo para desactivar el bot: 🛑${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId,
-    reply_markup: { inline_keyboard: buttons }
-  });
-  autoDeleteMessage(chatId, message.message_id, threadId);
-});
-
 // Manejo de botones
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
@@ -582,12 +577,11 @@ bot.on('callback_query', async (query) => {
 
   const action = query.data;
 
-  // Responder a la callback query lo más rápido posible para evitar el error "query is too old"
+  // Responder a la callback query lo más rápido posible para evitar errores
   try {
     await bot.answerCallbackQuery(query.id);
   } catch (error) {
     logAction('answer_callback_error', { queryId: query.id, error: error.message });
-    // Continuar incluso si falla, ya que el error "query is too old" no debe detener el flujo
   }
 
   // Manejo de navegación
@@ -595,7 +589,6 @@ bot.on('callback_query', async (query) => {
     const direction = action.startsWith('navigate_prev_') ? 'prev' : 'next';
     let currentIndex = parseInt(action.split('_').pop());
 
-    // Verificar que commandHistory[userId] esté inicializado y tenga elementos
     if (!commandHistory[userId] || commandHistory[userId].length === 0) {
       const message = await bot.sendMessage(chatId, `❌ ${userMention}, no hay historial de comandos para navegar. 📜${adminMessage}`, {
         message_thread_id: threadId,
@@ -605,13 +598,11 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    // Ajustar el índice según la dirección
     if (direction === 'prev' && currentIndex > 0) {
       currentIndex--;
     } else if (direction === 'next' && currentIndex < commandHistory[userId].length - 1) {
       currentIndex++;
     } else {
-      // Si no se puede navegar más, no hacemos nada
       return;
     }
 
@@ -626,17 +617,12 @@ bot.on('callback_query', async (query) => {
     }
 
     let responseText = commandEntry.response;
-    if (commandEntry.command === '/logs') {
-      responseText = `📜 *Últimas 10 líneas de Logs de Render* 📜\n\n\`\`\`\n${renderLogsLimited}\n\`\`\`\n\n🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
-    }
 
-    // Verificar si el contenido o el markup ha cambiado para evitar el error "message is not modified"
     const currentMessageText = query.message.text || '';
     const currentMarkup = query.message.reply_markup || {};
     const newMarkup = addNavigationButtons(userId, currentIndex).reply_markup || {};
 
     if (currentMessageText === responseText && JSON.stringify(currentMarkup) === JSON.stringify(newMarkup)) {
-      // No hay cambios, no intentamos editar el mensaje
       return;
     }
 
@@ -649,6 +635,19 @@ bot.on('callback_query', async (query) => {
         ...addNavigationButtons(userId, currentIndex)
       });
     } catch (error) {
+      if (error.response?.status === 429) {
+        const retryAfter = error.response.data.parameters.retry_after || 1;
+        logAction('rate_limit_error', { retryAfter });
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        await bot.editMessageText(responseText, {
+          chat_id: chatId,
+          message_id: messageId,
+          message_thread_id: threadId,
+          parse_mode: 'Markdown',
+          ...addNavigationButtons(userId, currentIndex)
+        });
+        return;
+      }
       logAction('edit_message_error', { chatId, messageId, error: error.message });
       const message = await bot.sendMessage(chatId, `❌ ${userMention}, error al navegar: ${error.message} ⚠️${adminMessage}`, {
         message_thread_id: threadId,
@@ -659,76 +658,10 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  // Manejo de activación/desactivación
-  if (action.startsWith('activate_group_') || action.startsWith('deactivate_group_')) {
-    const isActivation = action.startsWith('activate_group_');
-    const groupId = action.split('_').pop();
-    const group = ALLOWED_CHAT_IDS.find(g => g.chatId === groupId);
-
-    if (!group) {
-      const message = await bot.sendMessage(chatId, `❌ ${userMention}, grupo no encontrado. 📩 Contacta al soporte.${adminMessage}`, { message_thread_id: threadId, parse_mode: 'Markdown' });
-      autoDeleteMessage(chatId, message.message_id, threadId);
-      return;
-    }
-
-    if ((isActivation && group.active) || (!isActivation && !group.active)) {
-      const message = await bot.sendMessage(chatId, `ℹ️ ${userMention}, el bot ya está ${isActivation ? 'activo' : 'inactivo'} en ${group.name}. 🔄${adminMessage}`, { message_thread_id: threadId, parse_mode: 'Markdown' });
-      autoDeleteMessage(chatId, message.message_id, threadId);
-      return;
-    }
-
-    const confirmButtons = [
-      [{ text: '✅ Confirmar', callback_data: `confirm_${action}` }],
-      [{ text: '❌ Cancelar', callback_data: `cancel_${groupId}` }]
-    ];
-
-    const message = await bot.sendMessage(chatId, `⚠️ ${userMention}, ¿estás seguro de ${isActivation ? 'activar' : 'desactivar'} el bot en ${group.name}? 🤔${adminMessage}`, {
-      parse_mode: 'Markdown',
-      message_thread_id: threadId,
-      reply_markup: { inline_keyboard: confirmButtons }
-    });
-    autoDeleteMessage(chatId, message.message_id, threadId);
-    return;
-  }
-
-  // Manejo de confirmación/cancelación
-  if (action.startsWith('confirm_')) {
-    const originalAction = action.replace('confirm_', '');
-    const isActivation = originalAction.startsWith('activate_group_');
-    const groupId = originalAction.split('_').pop();
-    const group = ALLOWED_CHAT_IDS.find(g => g.chatId === groupId);
-
-    if (!group) return;
-
-    group.active = isActivation;
-    const message = await bot.sendMessage(chatId, `${isActivation ? '🟢' : '🔴'} ${userMention}, el bot ha sido ${isActivation ? 'activado' : 'desactivado'} en ${group.name}. 🎉${adminMessage}`, {
-      parse_mode: 'Markdown',
-      message_thread_id: threadId
-    });
-    autoDeleteMessage(chatId, message.message_id, threadId);
-    return;
-  }
-
-  if (action.startsWith('cancel_')) {
-    const groupId = action.split('_').pop();
-    const group = ALLOWED_CHAT_IDS.find(g => g.chatId === groupId);
-    if (!group) return;
-
-    const message = await bot.sendMessage(chatId, `ℹ️ ${userMention}, acción cancelada para ${group.name}. 🔄${adminMessage}`, {
-      parse_mode: 'Markdown',
-      message_thread_id: threadId
-    });
-    autoDeleteMessage(chatId, message.message_id, threadId);
-    return;
-  }
-
-  // Verificar si el grupo está activo antes de procesar otras acciones
   if (!isAllowedContext(chatId, threadId)) return;
 
-  // Inicializar commandHistory[userId] si no existe
   if (!commandHistory[userId]) commandHistory[userId] = [];
 
-  // Otras acciones de botones
   try {
     if (action === 'check') {
       const response = `🔎 ${userMention}, envía un enlace IPTV para verificar (M3U, Xtream, TS, etc.): 📡${adminMessage}`;
@@ -763,35 +696,14 @@ bot.on('callback_query', async (query) => {
       const message = await bot.sendMessage(chatId, response, { parse_mode: 'Markdown', message_thread_id: threadId, reply_to_message_id: messageId, ...mainMenu, ...addNavigationButtons(userId, commandHistory[userId].length - 1) });
       commandHistory[userId].push({ command: 'help', response });
       autoDeleteMessage(chatId, message.message_id, threadId);
-    } else if (action === 'stats') {
-      const response = `📊 *Estadísticas de ${botName}* para ${userMention} 📊\n\n` +
-        `🔍 *Verificaciones totales*: ${stats.totalChecks}\n` +
-        `👥 *Usuarios únicos*: ${stats.uniqueUsers.size}\n` +
-        `⏱ *Alertas activas*: ${stats.activeAlerts}\n\n` +
-        `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
-      const message = await bot.sendMessage(chatId, response, { parse_mode: 'Markdown', message_thread_id: threadId, reply_to_message_id: messageId, ...mainMenu, ...addNavigationButtons(userId, commandHistory[userId].length - 1) });
-      commandHistory[userId].push({ command: 'stats', response });
-      autoDeleteMessage(chatId, message.message_id, threadId);
-    } else if (action === 'logs') {
-      const response = `📜 *Últimas 10 líneas de Logs de Render* 📜\n\n\`\`\`\n${renderLogsLimited}\n\`\`\`\n\n🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
-      const message = await bot.sendMessage(chatId, response, { parse_mode: 'Markdown', message_thread_id: threadId, reply_to_message_id: messageId, ...mainMenu, ...addNavigationButtons(userId, commandHistory[userId].length - 1) });
-      commandHistory[userId].push({ command: '/logs', response });
-      autoDeleteMessage(chatId, message.message_id, threadId);
-    } else if (action === 'clear') {
-      if (userHistory[userId]) {
-        delete userHistory[userId];
-        const response = `🗑 ${userMention}, tu historial de verificaciones ha sido limpiado. 🧹${adminMessage}`;
-        const message = await bot.sendMessage(chatId, response, { parse_mode: 'Markdown', message_thread_id: threadId, reply_to_message_id: messageId, ...mainMenu, ...addNavigationButtons(userId, commandHistory[userId].length - 1) });
-        commandHistory[userId].push({ command: 'clear', response });
-        autoDeleteMessage(chatId, message.message_id, threadId);
-      } else {
-        const response = `🗑 ${userMention}, no tienes historial para limpiar. 📜${adminMessage}`;
-        const message = await bot.sendMessage(chatId, response, { parse_mode: 'Markdown', message_thread_id: threadId, reply_to_message_id: messageId, ...mainMenu, ...addNavigationButtons(userId, commandHistory[userId].length - 1) });
-        commandHistory[userId].push({ command: 'clear', response });
-        autoDeleteMessage(chatId, message.message_id, threadId);
-      }
     }
   } catch (error) {
+    if (error.response?.status === 429) {
+      const retryAfter = error.response.data.parameters.retry_after || 1;
+      logAction('rate_limit_error', { retryAfter });
+      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      return;
+    }
     logAction('callback_error', { action, error: error.message });
     const message = await bot.sendMessage(chatId, `❌ ${userMention}, ocurrió un error: ${error.message} ⚠️${adminMessage}`, { message_thread_id: threadId, parse_mode: 'Markdown', reply_to_message_id: messageId });
     autoDeleteMessage(chatId, message.message_id, threadId);
@@ -805,16 +717,9 @@ bot.onText(/\/iptv/, async (msg) => {
   const userId = msg.from.id;
   const userMention = getUserMention(msg.from);
 
-  if (!isAllowedContext(chatId, threadId)) {
-    const group = getGroup(chatId);
-    if (group && !group.active) {
-      const message = await bot.sendMessage(chatId, `🚫 ${userMention}, el bot está desactivado en este grupo. Usa /on para activarlo. 🔄${adminMessage}`, { message_thread_id: threadId, parse_mode: 'Markdown' });
-      autoDeleteMessage(chatId, message.message_id, threadId);
-    }
-    return;
-  }
+  if (!isAllowedContext(chatId, threadId)) return;
 
-  const response = `🌟 ¡Bienvenido ${userMention} a *${botName}*! 🌟\n\nSoy un bot gratuito para verificar y gestionar listas IPTV. Usa los botones o envía un enlace directamente.\n\n*Comandos disponibles*:\n/iptv - Iniciar\n/guia - Ayuda\n/espejos - Buscar servidores alternativos\n/stats - Ver estadísticas\n/limpiar - Borrar historial\n/logs - Ver logs de render\n/on - Activar bot\n/off - Desactivar bot${adminMessage}`;
+  const response = `🌟 ¡Bienvenido ${userMention} a *${botName}*! 🌟\n\nSoy un bot gratuito para verificar y gestionar listas IPTV. Usa los botones o envía un enlace directamente.\n\n*Comandos disponibles*:\n/iptv - Iniciar\n/guia - Ayuda\n/espejos - Buscar servidores alternativos${adminMessage}`;
   const message = await bot.sendMessage(chatId, response, {
     parse_mode: 'Markdown',
     message_thread_id: threadId,
@@ -853,12 +758,7 @@ bot.onText(/\/guia/, async (msg) => {
     `📜 *Comandos disponibles*:\n` +
     `/iptv - Iniciar el bot\n` +
     `/guia - Ver esta guía\n` +
-    `/espejos <servidor> - Buscar servidores alternativos\n` +
-    `/stats - Ver estadísticas del bot\n` +
-    `/limpiar - Borrar tu historial\n` +
-    `/logs - Ver logs de render\n` +
-    `/on - Activar el bot en un grupo\n` +
-    `/off - Desactivar el bot en un grupo\n\n` +
+    `/espejos <servidor> - Buscar servidores alternativos\n\n` +
     `💡 *Ejemplo de uso*:\n` +
     `- Verificar: http://server.com/get.php?username=xxx&password=yyy\n` +
     `- Buscar espejos: /espejos http://srdigital.win:8080\n` +
@@ -873,11 +773,9 @@ bot.onText(/\/guia/, async (msg) => {
 
   if (!commandHistory[userId]) commandHistory[userId] = [];
   commandHistory[userId].push({ command: '/guia', response: helpMessage });
-
-  // No se autoelimina para que la guía permanezca visible
 });
 
-// Comando /espejos (optimizado)
+// Comando /espejos (optimizado con más fuentes)
 bot.onText(/\/espejos\s+(.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
@@ -887,41 +785,45 @@ bot.onText(/\/espejos\s+(.+)/, async (msg, match) => {
 
   if (!isAllowedContext(chatId, threadId)) return;
 
-  // Verificar si el servidor ya tiene un error conocido en los logs
-  let logError = '';
-  if (renderLogs.includes(server) && renderLogs.includes('free_iptv_error')) {
-    logError = `\n⚠️ *Nota*: Este servidor (${escapeMarkdown(server)}) falló previamente con un error 404 según los logs de render.`;
-  }
-
-  const checkingMessage = await bot.sendMessage(chatId, `🪞 ${userMention}, buscando servidores espejo para ${escapeMarkdown(server)}... 🔍${adminMessage}${logError}`, {
+  const checkingMessage = await bot.sendMessage(chatId, `🪞 ${userMention}, buscando servidores espejo para ${escapeMarkdown(server)}... 🔍${adminMessage}`, {
     parse_mode: 'Markdown',
     message_thread_id: threadId
   });
   autoDeleteMessage(chatId, checkingMessage.message_id, threadId);
 
-  // Mostrar animación de carga
-  await showLoadingAnimation(chatId, threadId, checkingMessage.message_id, `🪞 ${userMention}, buscando servidores espejo para ${escapeMarkdown(server)}...`, 4000);
+  // Mostrar animación de carga (optimizada)
+  await showLoadingAnimation(chatId, threadId, checkingMessage.message_id, `🪞 ${userMention}, buscando servidores espejo para ${escapeMarkdown(server)}...`, 5000);
 
-  // Actualizar estado: Buscando en FastoTV
-  await bot.editMessageText(`🪞 ${userMention}, buscando servidores espejo para ${escapeMarkdown(server)}...\n📡 *Estado*: Buscando en FastoTV... 🔍${adminMessage}${logError}`, {
-    chat_id: chatId,
-    message_id: checkingMessage.message_id,
-    message_thread_id: threadId,
-    parse_mode: 'Markdown'
-  });
-  const dynamicMirrors = await generateMirrorServers(server);
+  const sources = [
+    { name: 'FastoTV', search: generateMirrorServers },
+    { name: 'IPTVCat', search: searchMirrorsFromIPTVCat },
+    { name: 'IPTV-org', search: searchMirrorsFromIPTVOrg },
+    { name: 'Free-IPTV', search: searchMirrorsFromFreeIPTV },
+    { name: 'Fluxus', search: searchMirrorsFromFluxus },
+    { name: 'IPTV-Checker', search: searchMirrorsFromIPTVChecker },
+    { name: 'IPTV-Playlist', search: searchMirrorsFromIPTVPlaylist }
+  ];
 
-  // Actualizar estado: Buscando en IPTVCat
-  await bot.editMessageText(`🪞 ${userMention}, buscando servidores espejo para ${escapeMarkdown(server)}...\n📡 *Estado*: Buscando en IPTVCat... 🔍${adminMessage}${logError}`, {
-    chat_id: chatId,
-    message_id: checkingMessage.message_id,
-    message_thread_id: threadId,
-    parse_mode: 'Markdown'
-  });
-  const iptvCatMirrors = await searchMirrorsFromIPTVCat(server);
+  const mirrorsBySource = {};
+  for (const source of sources) {
+    try {
+      await bot.editMessageText(`🪞 ${userMention}, buscando servidores espejo para ${escapeMarkdown(server)}...\n📡 *Estado*: Buscando en ${source.name}... 🔍${adminMessage}`, {
+        chat_id: chatId,
+        message_id: checkingMessage.message_id,
+        message_thread_id: threadId,
+        parse_mode: 'Markdown'
+      });
+      const mirrors = await source.search(server);
+      mirrorsBySource[source.name] = mirrors;
+    } catch (error) {
+      logAction(`${source.name}_error`, { error: error.message });
+      mirrorsBySource[source.name] = [];
+    }
+  }
 
   // Combinar resultados y eliminar duplicados
-  const mirrors = [...new Set([...dynamicMirrors, ...iptvCatMirrors])];
+  const allMirrors = Object.values(mirrorsBySource).flat();
+  const mirrors = [...new Set(allMirrors)];
 
   // Si no se encuentran espejos, usar la base de datos estática
   if (mirrors.length === 0) {
@@ -930,87 +832,42 @@ bot.onText(/\/espejos\s+(.+)/, async (msg, match) => {
 
   let response;
   if (mirrors.length > 0) {
+    const sourcesUsed = Object.keys(mirrorsBySource).filter(source => mirrorsBySource[source].length > 0).join(', ');
     response = `✅ ${userMention}, aquí tienes los servidores espejo para ${escapeMarkdown(server)}:\n\n` +
-      mirrors.map(m => `- ${escapeMarkdown(m)}`).join('\n') + `\n\n📡 *Fuentes*: FastoTV, IPTVCat\n` +
-      `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}${logError}`;
+      mirrors.map(m => `- ${escapeMarkdown(m)}`).join('\n') + `\n\n📡 *Fuentes*: ${sourcesUsed || 'Base de datos estática'}\n` +
+      `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
   } else {
     response = `❌ ${userMention}, no se encontraron servidores espejo para ${escapeMarkdown(server)}.\n` +
-      `💡 Intenta con otro servidor o contacta al soporte. 📩${adminMessage}${logError}`;
+      `💡 Intenta con otro servidor o contacta al soporte. 📩${adminMessage}`;
   }
 
-  await bot.editMessageText(response, {
-    chat_id: chatId,
-    message_id: checkingMessage.message_id,
-    message_thread_id: threadId,
-    parse_mode: 'Markdown',
-    ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
-  });
+  try {
+    await bot.editMessageText(response, {
+      chat_id: chatId,
+      message_id: checkingMessage.message_id,
+      message_thread_id: threadId,
+      parse_mode: 'Markdown',
+      ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
+    });
+  } catch (error) {
+    if (error.response?.status === 429) {
+      const retryAfter = error.response.data.parameters.retry_after || 1;
+      logAction('rate_limit_error', { retryAfter });
+      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      await bot.editMessageText(response, {
+        chat_id: chatId,
+        message_id: checkingMessage.message_id,
+        message_thread_id: threadId,
+        parse_mode: 'Markdown',
+        ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
+      });
+      return;
+    }
+    throw error;
+  }
 
   if (!commandHistory[userId]) commandHistory[userId] = [];
   commandHistory[userId].push({ command: `/espejos ${server}`, response });
-});
-
-// Comando /stats
-bot.onText(/\/stats/, async (msg) => {
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id || '0';
-  const userId = msg.from.id;
-  const userMention = getUserMention(msg.from);
-
-  if (!isAllowedContext(chatId, threadId)) return;
-
-  const response = `📊 *Estadísticas de ${botName}* para ${userMention} 📊\n\n` +
-    `🔍 *Verificaciones totales*: ${stats.totalChecks}\n` +
-    `👥 *Usuarios únicos*: ${stats.uniqueUsers.size}\n` +
-    `⏱ *Alertas activas*: ${stats.activeAlerts}\n\n` +
-    `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
-
-  const message = await bot.sendMessage(chatId, response, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId,
-    ...mainMenu,
-    ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
-  });
-
-  if (!commandHistory[userId]) commandHistory[userId] = [];
-  commandHistory[userId].push({ command: '/stats', response });
-
-  autoDeleteMessage(chatId, message.message_id, threadId);
-});
-
-// Comando /limpiar
-bot.onText(/\/limpiar/, async (msg) => {
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id || '0';
-  const userId = msg.from.id;
-  const userMention = getUserMention(msg.from);
-
-  if (!isAllowedContext(chatId, threadId)) return;
-
-  if (userHistory[userId]) {
-    delete userHistory[userId];
-    const response = `🗑 ${userMention}, tu historial de verificaciones ha sido limpiado. 🧹${adminMessage}`;
-    const message = await bot.sendMessage(chatId, response, {
-      parse_mode: 'Markdown',
-      message_thread_id: threadId,
-      ...mainMenu,
-      ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
-    });
-    if (!commandHistory[userId]) commandHistory[userId] = [];
-    commandHistory[userId].push({ command: '/limpiar', response });
-    autoDeleteMessage(chatId, message.message_id, threadId);
-  } else {
-    const response = `🗑 ${userMention}, no tienes historial para limpiar. 📜${adminMessage}`;
-    const message = await bot.sendMessage(chatId, response, {
-      parse_mode: 'Markdown',
-      message_thread_id: threadId,
-      ...mainMenu,
-      ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
-    });
-    if (!commandHistory[userId]) commandHistory[userId] = [];
-    commandHistory[userId].push({ command: '/limpiar', response });
-    autoDeleteMessage(chatId, message.message_id, threadId);
-  }
 });
 
 // Procesar mensajes con URLs IPTV o alertas
@@ -1021,9 +878,6 @@ bot.on('message', async (msg) => {
   const text = msg.text || '';
   const replyToMessage = msg.reply_to_message;
   const userMention = getUserMention(msg.from);
-
-  // Permitir /on y /off incluso en grupos inactivos
-  if (text.startsWith('/on') || text.startsWith('/off')) return;
 
   if (!isAllowedContext(chatId, threadId)) return;
 
@@ -1045,8 +899,6 @@ bot.on('message', async (msg) => {
 
     if (!alerts[userId]) alerts[userId] = [];
     alerts[userId].push({ url, days: daysNum, lastChecked: null, chatId, threadId });
-    stats.activeAlerts++;
-    saveStats();
 
     const message = await bot.sendMessage(chatId, `⏱ ${userMention}, alerta configurada para ${escapeMarkdown(url)} cada ${daysNum} día(s). Te notificaré cuando cambie su estado. 🔔${adminMessage}`, {
       parse_mode: 'Markdown',
@@ -1064,9 +916,6 @@ bot.on('message', async (msg) => {
   // Verificar lista IPTV
   if (isIPTV && !text.startsWith('/')) {
     const url = text.match(/(http|https):\/\/[^\s]+/)?.[0] || text;
-    stats.totalChecks++;
-    stats.uniqueUsers.add(userId);
-    saveStats();
 
     const checkingMessage = await bot.sendMessage(chatId, `🔎 ${userMention}, verificando la lista ${escapeMarkdown(url)}... 📡${adminMessage}`, {
       parse_mode: 'Markdown',
@@ -1084,14 +933,32 @@ bot.on('message', async (msg) => {
 
     const { text: responseText } = formatResponse(msg, result, replyToMessage?.message_id);
 
-    await bot.editMessageText(responseText, {
-      chat_id: chatId,
-      message_id: checkingMessage.message_id,
-      message_thread_id: threadId,
-      parse_mode: 'Markdown',
-      reply_to_message_id: replyToMessage?.message_id,
-      ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
-    });
+    try {
+      await bot.editMessageText(responseText, {
+        chat_id: chatId,
+        message_id: checkingMessage.message_id,
+        message_thread_id: threadId,
+        parse_mode: 'Markdown',
+        reply_to_message_id: replyToMessage?.message_id,
+        ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
+      });
+    } catch (error) {
+      if (error.response?.status === 429) {
+        const retryAfter = error.response.data.parameters.retry_after || 1;
+        logAction('rate_limit_error', { retryAfter });
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        await bot.editMessageText(responseText, {
+          chat_id: chatId,
+          message_id: checkingMessage.message_id,
+          message_thread_id: threadId,
+          parse_mode: 'Markdown',
+          reply_to_message_id: replyToMessage?.message_id,
+          ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
+        });
+        return;
+      }
+      throw error;
+    }
 
     if (!commandHistory[userId]) commandHistory[userId] = [];
     commandHistory[userId].push({ command: `Verificar ${url}`, response: responseText });
