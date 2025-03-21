@@ -17,7 +17,7 @@ app.use(express.json());
 // Webhook
 const webhookUrl = 'https://entrelinks.onrender.com';
 
-// IDs permitidos y estado de grupos (eliminamos la lógica de activación/desactivación)
+// IDs permitidos (simplificado, sin lógica de activación/desactivación)
 const ALLOWED_CHAT_IDS = [
   { chatId: '-1002348662107', threadId: '53411', name: 'EntresHijos' },
   { chatId: '-1002565012502', threadId: null, name: 'BotChecker_IPTV_ParaG' }
@@ -45,7 +45,7 @@ const mirrorsDB = {
 // Mensaje fijo
 const adminMessage = '\n\n👨‍💼 *Equipo de Administración EntresHijos*';
 
-// Registrar logs (simplificado, solo en consola)
+// Registrar logs (solo en consola)
 function logAction(action, details) {
   const timestamp = new Date().toLocaleString('es-ES');
   console.log(`[${timestamp}] ${action}:`, details);
@@ -76,7 +76,7 @@ async function autoDeleteMessage(chatId, messageId, threadId) {
 async function showLoadingAnimation(chatId, threadId, messageId, baseText, duration) {
   const frames = ['🔍', '⏳', '🔎'];
   let frameIndex = 0;
-  const interval = 1000; // Reducimos la frecuencia a 1 segundo por frame
+  const interval = 1000; // 1 segundo por frame
   const steps = Math.floor(duration / interval);
 
   for (let i = 0; i < steps; i++) {
@@ -426,7 +426,428 @@ async function searchMirrorsFromIPTVPlaylist(serverUrl) {
   }
 }
 
-// Verificar lista IPTV (simplificado)
+// Consultar iptvstream.live para buscar servidores espejo
+async function searchMirrorsFromIPTVStream(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptvstream.live/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvstream_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptv4best.com para buscar servidores espejo
+async function searchMirrorsFromIPTV4Best(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptv4best.com/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptv4best_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptvlinksfree.com para buscar servidores espejo
+async function searchMirrorsFromIPTVLinks(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptvlinksfree.com/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvlinks_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptv.git.github.io para buscar servidores espejo
+async function searchMirrorsFromIPTVGit(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptv.git.github.io/index.m3u', { timeout: 5000 });
+    const lines = response.data.split('\n');
+    const mirrors = [];
+
+    for (const line of lines) {
+      if (line.startsWith('http')) {
+        try {
+          const mirrorUrl = new URL(line.trim());
+          const mirrorDomain = mirrorUrl.hostname;
+          if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+            mirrors.push(mirrorUrl.href);
+          }
+        } catch (error) {
+          // Ignorar URLs mal formadas
+        }
+      }
+    }
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvgit_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptv.community para buscar servidores espejo
+async function searchMirrorsFromIPTVCommunity(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptv.community/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvcommunity_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptvonline.me para buscar servidores espejo
+async function searchMirrorsFromIPTVOnline(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptvonline.me/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvonline_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptvstreamz.com para buscar servidores espejo
+async function searchMirrorsFromIPTVStreamz(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptvstreamz.com/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvstreamz_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptvlists.com para buscar servidores espejo
+async function searchMirrorsFromIPTVLists(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptvlists.com/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvlists_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptvworld.net para buscar servidores espejo
+async function searchMirrorsFromIPTVWorld(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptvworld.net/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvworld_error', { error: error.message });
+    return [];
+  }
+}
+
+// Consultar iptvstreamers.com para buscar servidores espejo
+async function searchMirrorsFromIPTVStreamers(serverUrl) {
+  try {
+    const url = new URL(serverUrl);
+    const domain = url.hostname;
+    const baseDomain = domain.split('.').slice(-2).join('.');
+
+    const response = await axios.get('https://iptvstreamers.com/', { timeout: 5000 });
+    const $ = cheerio.load(response.data);
+    const mirrors = [];
+
+    $('a[href^="http"]').each((i, element) => {
+      const link = $(element).attr('href');
+      try {
+        const mirrorUrl = new URL(link);
+        const mirrorDomain = mirrorUrl.hostname;
+        if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
+          mirrors.push(mirrorUrl.href);
+        }
+      } catch (error) {
+        // Ignorar URLs mal formadas
+      }
+    });
+
+    const activeMirrors = [];
+    for (const mirror of mirrors) {
+      try {
+        const headResponse = await axios.head(mirror, { timeout: 3000 });
+        if (headResponse.status === 200) {
+          activeMirrors.push(mirror);
+        }
+      } catch (error) {
+        // Ignorar servidores inactivos
+      }
+    }
+    return activeMirrors;
+  } catch (error) {
+    logAction('iptvstreamers_error', { error: error.message });
+    return [];
+  }
+}
+
+// Verificar lista IPTV
 async function checkIPTVList(url) {
   logAction('check_start', { url });
   try {
@@ -535,7 +956,7 @@ function formatResponse(msg, result, previousMessageId = null) {
   return { text: response, replyTo: previousMessageId };
 }
 
-// Menú principal simplificado (eliminamos botones de /stats, /limpiar, /logs)
+// Menú principal (sin botones de /stats, /limpiar, /logs, /on, /off)
 const mainMenu = {
   reply_markup: {
     inline_keyboard: [
@@ -577,7 +998,7 @@ bot.on('callback_query', async (query) => {
 
   const action = query.data;
 
-  // Responder a la callback query lo más rápido posible para evitar errores
+  // Responder a la callback query lo más rápido posible
   try {
     await bot.answerCallbackQuery(query.id);
   } catch (error) {
@@ -775,7 +1196,7 @@ bot.onText(/\/guia/, async (msg) => {
   commandHistory[userId].push({ command: '/guia', response: helpMessage });
 });
 
-// Comando /espejos (optimizado con más fuentes)
+// Comando /espejos (con más fuentes)
 bot.onText(/\/espejos\s+(.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
@@ -791,7 +1212,6 @@ bot.onText(/\/espejos\s+(.+)/, async (msg, match) => {
   });
   autoDeleteMessage(chatId, checkingMessage.message_id, threadId);
 
-  // Mostrar animación de carga (optimizada)
   await showLoadingAnimation(chatId, threadId, checkingMessage.message_id, `🪞 ${userMention}, buscando servidores espejo para ${escapeMarkdown(server)}...`, 5000);
 
   const sources = [
@@ -801,7 +1221,17 @@ bot.onText(/\/espejos\s+(.+)/, async (msg, match) => {
     { name: 'Free-IPTV', search: searchMirrorsFromFreeIPTV },
     { name: 'Fluxus', search: searchMirrorsFromFluxus },
     { name: 'IPTV-Checker', search: searchMirrorsFromIPTVChecker },
-    { name: 'IPTV-Playlist', search: searchMirrorsFromIPTVPlaylist }
+    { name: 'IPTV-Playlist', search: searchMirrorsFromIPTVPlaylist },
+    { name: 'IPTVStream', search: searchMirrorsFromIPTVStream },
+    { name: 'IPTV4Best', search: searchMirrorsFromIPTV4Best },
+    { name: 'IPTVLinks', search: searchMirrorsFromIPTVLinks },
+    { name: 'IPTVGit', search: searchMirrorsFromIPTVGit },
+    { name: 'IPTVCommunity', search: searchMirrorsFromIPTVCommunity },
+    { name: 'IPTVOnline', search: searchMirrorsFromIPTVOnline },
+    { name: 'IPTVStreamz', search: searchMirrorsFromIPTVStreamz },
+    { name: 'IPTVLists', search: searchMirrorsFromIPTVLists },
+    { name: 'IPTVWorld', search: searchMirrorsFromIPTVWorld },
+    { name: 'IPTVStreamers', search: searchMirrorsFromIPTVStreamers }
   ];
 
   const mirrorsBySource = {};
