@@ -310,9 +310,28 @@ bot.on('callback_query', async (query) => {
         parse_mode: 'Markdown'
       });
     } else if (query.data === 'guia') {
-      await bot.sendMessage(chatId, `/guia`, {
-        message_thread_id: allowedThreadId
+      const helpMessage = `📖 *Guía de ${botName}* para ${userMention} 📖\n\n` +
+        `✨ *¿Qué soy?*\n` +
+        `Un bot gratuito exclusivo para EntresHijos que verifica listas IPTV de manera rápida y profesional.\n\n` +
+        `🔧 *¿Cómo usarme?*\n` +
+        `- Haz clic en "Verificar Lista" o envía un enlace IPTV válido.\n` +
+        `- Recibe un informe detallado al instante.\n` +
+        `- Los mensajes se eliminan tras 5 minutos para mantener el chat limpio.\n\n` +
+        `📋 *Formatos compatibles*:\n` +
+        `- *Xtream*: \`http://server.com:80/get.php?username=xxx&password=yyy\`\n` +
+        `- *M3U/M3U8*: \`http://server.com:80/playlist.m3u\`\n` +
+        `- *TS/HLS*: \`http://server.com:80/stream.ts\`\n\n` +
+        `💡 *Pasos sencillos*:\n` +
+        `1. Usa "Verificar Lista" o envía tu enlace.\n` +
+        `2. Obtén una respuesta clara y rápida.\n\n` +
+        `🚀 *${botName} - Verificación Gratuita y Profesional*${adminMessage}`;
+
+      const message = await bot.sendMessage(chatId, helpMessage, {
+        parse_mode: 'Markdown',
+        message_thread_id: allowedThreadId,
+        ...mainMenu
       });
+      autoDeleteMessage(chatId, message.message_id, allowedThreadId);
     }
   } catch (error) {
     logAction('callback_error', { action: query.data, error: error.message });
@@ -352,7 +371,7 @@ bot.onText(/\/iptv/, async (msg) => {
   autoDeleteMessage(chatId, message.message_id, allowedThreadId);
 });
 
-// Comando /guia (ayuda)
+// Comando /guia (mantiene compatibilidad)
 bot.onText(/\/guia/, async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
