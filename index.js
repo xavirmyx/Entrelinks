@@ -240,8 +240,8 @@ async function checkIPTVList(url, userId) {
   }
 }
 
-// Formatear respuesta
-function formatResponse(msg, result) {
+// Formatear respuesta con enlace clickable
+function formatResponse(msg, result, originalUrl) {
   const timestamp = new Date().toLocaleString('es-ES', { timeZone: 'America/Mexico_City' });
   const userMention = getUserMention(msg.from);
 
@@ -259,14 +259,14 @@ function formatResponse(msg, result) {
 
   const response = `✨ Hola ${userMention}, aquí tienes los detalles de tu lista IPTV ✨\n\n` +
     `📅 *Fecha y hora*: ${timestamp}\n` +
-    `📡 *Lista*: ${escapeMarkdown(result.server || 'N/A')}\n` +
+    `📡 *Lista*: [${escapeMarkdown(originalUrl)}](${originalUrl})\n` +
     `💬 *Estado*: ${messageText}\n` +
     `🔑 *Combo*: ${combo}\n` +
     `📅 *Creada*: ${result.createdAt || 'No disponible'}\n` +
     `⏰ *Expira*: ${result.expiresAt || 'No disponible'}\n` +
     `🔗 *Conexiones*: ${result.activeConnections !== undefined ? `${result.activeConnections}/${result.maxConnections}` : 'No disponible'}\n` +
     `📺 *Canales*: ${result.totalChannels || 0}\n` +
-    `🌐 *Servidor Real*: ${serverReal}\n` +
+    `🌐 *Servidor Real*: [${serverReal}](${serverReal})\n` +
     `⏲ *Zona horaria*: ${result.timezone || 'No disponible'}\n\n` +
     `🚀 *${botName} - Verificación Profesional y Gratuita*${adminMessage}`;
 
@@ -405,6 +405,49 @@ bot.onText(/\/guia/, async (msg) => {
   autoDeleteMessage(chatId, message.message_id, allowedThreadId);
 });
 
+// Comando oculto /historial
+bot.onText(/\/historial/, async (msg) => {
+  const chatId = msg.chat.id;
+  const threadId = msg.message_thread_id || '0';
+  const userMention = getUserMention(msg.from);
+  const allowedThreadId = getAllowedThreadId(chatId);
+
+  if (String(chatId) !== '-1002565012502' || !isAllowedContext(chatId, threadId)) {
+    return; // Comando oculto, no responde fuera del grupo permitido
+  }
+
+  if (Object.keys(userHistory).length === 0) {
+    const message = await bot.sendMessage(chatId, `📜 Hola ${userMention}, aún no hay historial de uso en *${botName}*.${adminMessage}`, {
+      parse_mode: 'Markdown',
+      message_thread_id: allowedThreadId
+    });
+    autoDeleteMessage(chatId, message.message_id, allowedThreadId);
+    return;
+  }
+
+  let historyText = `📜 *Historial de Uso de ${botName}* 📜\n\n`;
+  for (const [userId, history] of Object.entries(userHistory)) {
+    const user = history[0].url ? await bot.getChatMember(chatId, userId).then(member => member.user) : { username: 'Desconocido', first_name: 'Usuario' };
+    const userMention = getUserMention(user);
+    historyText += `👤 *Usuario*: ${userMention} (ID: ${userId})\n` +
+                   `📊 *Número de usos*: ${history.length}\n` +
+                   `📋 *Detalles*:\n`;
+
+    history.forEach((entry, index) => {
+      const timestamp = entry.timestamp.toLocaleString('es-ES', { timeZone: 'America/Mexico_City' });
+      historyText += `  ${index + 1}. 📅 ${timestamp} - [${escapeMarkdown(entry.url)}](${entry.url})\n`;
+    });
+    historyText += '\n';
+  }
+  historyText += `🚀 *${botName} - Verificación Profesional y Gratuita*${adminMessage}`;
+
+  const message = await bot.sendMessage(chatId, historyText, {
+    parse_mode: 'Markdown',
+    message_thread_id: allowedThreadId
+  });
+  autoDeleteMessage(chatId, message.message_id, allowedThreadId);
+});
+
 // Procesar URLs IPTV
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
@@ -453,7 +496,7 @@ bot.on('message', async (msg) => {
     if (!userHistory[userId]) userHistory[userId] = [];
     userHistory[userId].push({ url, result, timestamp: new Date() });
 
-    const { text: responseText } = formatResponse(msg, result);
+    const { text: responseText } = formatResponse(msg, result, url);
 
     await bot.editMessageText(responseText, {
       chat_id: chatId,
