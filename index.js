@@ -33,31 +33,136 @@ const logsFile = 'bot_logs.json';
 const statsFile = 'bot_stats.json';
 
 // Logs de render (proporcionados)
-const renderLogs = `==> Running 'npm start'
+const renderLogs = `==> Cloning from https://github.com/xavirmyx/Entrelinks
+==> Checking out commit 1100dd828cd5bee7fa9d716294b4f673a7e9b2a0 in branch main
+==> Using Node.js version 22.12.0 (default)
+==> Docs on specifying a Node.js version: https://render.com/docs/node-version
+==> Using Bun version 1.1.0 (default)
+==> Docs on specifying a bun version: https://render.com/docs/bun-version
+==> Running build command 'npm install'...
+added 246 packages, and audited 247 packages in 3s
+91 packages are looking for funding
+  run \`npm fund\` for details
+5 moderate severity vulnerabilities
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+Run \`npm audit\` for details.
+==> Uploading build...
+==> Uploaded in 5.0s. Compression took 1.3s
+==> Build successful 🎉
+==> Deploying...
+==> Running 'npm start'
 > entrecheck-iptv@1.0.0 start
 > node index.js
 🚀 EntreCheck_iptv iniciado 🎉
 🚀 Servidor en puerto 10000
-[20/3/2025, 23:57:59] webhook_set: {
+==> Your service is live 🎉
+[21/3/2025, 0:36:24] webhook_set: {
   url: 'https://entrelinks.onrender.com/bot7861676131:AAFLv4dBIFiHV1OYc8BJH2U8kWPal7lpBMQ'
 }
-[20/3/2025, 23:58:03] webhook_received: {
+[21/3/2025, 0:37:06] webhook_received: {
   update: {
-    update_id: 626025150,
+    update_id: 626025183,
     message: {
-      message_id: 24,
+      message_id: 63,
       from: [Object],
       chat: [Object],
-      date: 1742515060,
-      text: '/espejos http://amepz.xyz:8080',
+      date: 1742517426,
+      text: '/iptv',
+      entities: [Array]
+    }
+  }
+}
+[21/3/2025, 0:37:23] webhook_received: {
+  update: {
+    update_id: 626025184,
+    callback_query: {
+      id: '5692892859748174876',
+      from: [Object],
+      message: [Object],
+      chat_instance: '-5858350603537914894',
+      data: 'mirrors'
+    }
+  }
+}
+[21/3/2025, 0:37:34] webhook_received: {
+  update: {
+    update_id: 626025185,
+    message: {
+      message_id: 66,
+      from: [Object],
+      chat: [Object],
+      date: 1742517454,
+      text: '/espejos http://185.194.217.48:25461',
       entities: [Array],
       link_preview_options: [Object]
     }
   }
 }
-[20/3/2025, 23:58:03] free_iptv_error: { error: 'Request failed with status code 404' }
-==> Detected service running on port 10000
-==> Docs on specifying a port: https://render.com/docs/web-services#port-binding`;
+[21/3/2025, 0:37:51] webhook_received: {
+  update: {
+    update_id: 626025186,
+    callback_query: {
+      id: '5692892857296112301',
+      from: [Object],
+      message: [Object],
+      chat_instance: '-5858350603537914894',
+      data: 'navigate_next_1'
+    }
+  }
+}
+[21/3/2025, 0:37:53] webhook_received: {
+  update: {
+    update_id: 626025187,
+    callback_query: {
+      id: '5692892859095131219',
+      from: [Object],
+      message: [Object],
+      chat_instance: '-5858350603537914894',
+      data: 'navigate_next_2'
+    }
+  }
+}
+[21/3/2025, 0:38:14] webhook_received: {
+  update: {
+    update_id: 626025188,
+    callback_query: {
+      id: '5692892858144769577',
+      from: [Object],
+      message: [Object],
+      chat_instance: '-5858350603537914894',
+      data: 'navigate_prev_2'
+    }
+  }
+}
+[21/3/2025, 0:38:44] webhook_received: {
+  update: {
+    update_id: 626025190,
+    message: {
+      message_id: 68,
+      from: [Object],
+      chat: [Object],
+      date: 1742517497,
+      text: '/logs',
+      entities: [Array]
+    }
+  }
+}
+[21/3/2025, 0:38:44] webhook_received: {
+  update: {
+    update_id: 626025189,
+    callback_query: {
+      id: '5692892860576506248',
+      from: [Object],
+      message: [Object],
+      chat_instance: '-5858350603537914894',
+      data: 'logs'
+    }
+  }
+}`;
+
+// Limitar los logs a las últimas 10 líneas para optimizar
+const renderLogsLimited = renderLogs.split('\n').slice(-10).join('\n');
 
 // Base de datos estática de espejos (como respaldo)
 const mirrorsDB = {
@@ -137,12 +242,17 @@ async function showLoadingAnimation(chatId, threadId, messageId, baseText, durat
 
   for (let i = 0; i < duration / 500; i++) {
     const frame = frames[frameIndex % frames.length];
-    await bot.editMessageText(`${baseText} ${frame}`, {
-      chat_id: chatId,
-      message_id: messageId,
-      message_thread_id: threadId,
-      parse_mode: 'Markdown'
-    });
+    try {
+      await bot.editMessageText(`${baseText} ${frame}`, {
+        chat_id: chatId,
+        message_id: messageId,
+        message_thread_id: threadId,
+        parse_mode: 'Markdown'
+      });
+    } catch (error) {
+      logAction('loading_animation_error', { chatId, messageId, error: error.message });
+      break;
+    }
     frameIndex++;
     await new Promise(resolve => setTimeout(resolve, 500));
   }
@@ -397,7 +507,7 @@ const mainMenu = {
 
 // Función para añadir botones de navegación
 function addNavigationButtons(userId, currentIndex) {
-  if (!commandHistory[userId] || commandHistory[userId].length === 0) return {};
+  if (!commandHistory[userId] || commandHistory[userId].length <= 1) return {};
   return {
     reply_markup: {
       inline_keyboard: [
@@ -472,30 +582,80 @@ bot.on('callback_query', async (query) => {
 
   const action = query.data;
 
+  // Responder a la callback query lo más rápido posible para evitar el error "query is too old"
+  try {
+    await bot.answerCallbackQuery(query.id);
+  } catch (error) {
+    logAction('answer_callback_error', { queryId: query.id, error: error.message });
+    // Continuar incluso si falla, ya que el error "query is too old" no debe detener el flujo
+  }
+
   // Manejo de navegación
   if (action.startsWith('navigate_prev_') || action.startsWith('navigate_next_')) {
     const direction = action.startsWith('navigate_prev_') ? 'prev' : 'next';
     let currentIndex = parseInt(action.split('_').pop());
+
+    // Verificar que commandHistory[userId] esté inicializado y tenga elementos
+    if (!commandHistory[userId] || commandHistory[userId].length === 0) {
+      const message = await bot.sendMessage(chatId, `❌ ${userMention}, no hay historial de comandos para navegar. 📜${adminMessage}`, {
+        message_thread_id: threadId,
+        parse_mode: 'Markdown'
+      });
+      autoDeleteMessage(chatId, message.message_id, threadId);
+      return;
+    }
+
+    // Ajustar el índice según la dirección
     if (direction === 'prev' && currentIndex > 0) {
       currentIndex--;
     } else if (direction === 'next' && currentIndex < commandHistory[userId].length - 1) {
       currentIndex++;
+    } else {
+      // Si no se puede navegar más, no hacemos nada
+      return;
     }
 
     const commandEntry = commandHistory[userId][currentIndex];
-    let responseText = commandEntry.response;
-    if (commandEntry.command === '/logs') {
-      responseText = `📜 *Logs de Render* 📜\n\n\`\`\`\n${renderLogs}\n\`\`\`\n\n🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
+    if (!commandEntry) {
+      const message = await bot.sendMessage(chatId, `❌ ${userMention}, entrada de historial no encontrada. 📜${adminMessage}`, {
+        message_thread_id: threadId,
+        parse_mode: 'Markdown'
+      });
+      autoDeleteMessage(chatId, message.message_id, threadId);
+      return;
     }
 
-    await bot.editMessageText(responseText, {
-      chat_id: chatId,
-      message_id: messageId,
-      message_thread_id: threadId,
-      parse_mode: 'Markdown',
-      ...addNavigationButtons(userId, currentIndex)
-    });
-    await bot.answerCallbackQuery(query.id);
+    let responseText = commandEntry.response;
+    if (commandEntry.command === '/logs') {
+      responseText = `📜 *Últimas 10 líneas de Logs de Render* 📜\n\n\`\`\`\n${renderLogsLimited}\n\`\`\`\n\n🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
+    }
+
+    // Verificar si el contenido o el markup ha cambiado para evitar el error "message is not modified"
+    const currentMessageText = query.message.text || '';
+    const currentMarkup = query.message.reply_markup || {};
+    const newMarkup = addNavigationButtons(userId, currentIndex).reply_markup || {};
+
+    if (currentMessageText === responseText && JSON.stringify(currentMarkup) === JSON.stringify(newMarkup)) {
+      // No hay cambios, no intentamos editar el mensaje
+      return;
+    }
+
+    try {
+      await bot.editMessageText(responseText, {
+        chat_id: chatId,
+        message_id: messageId,
+        message_thread_id: threadId,
+        parse_mode: 'Markdown',
+        ...addNavigationButtons(userId, currentIndex)
+      });
+    } catch (error) {
+      logAction('edit_message_error', { chatId, messageId, error: error.message });
+      const message = await bot.sendMessage(chatId, `❌ ${userMention}, error al navegar: ${error.message} ⚠️${adminMessage}`, {
+        message_thread_id: threadId,
+        parse_mode: 'Markdown'
+      });
+      autoDeleteMessage(chatId, message.message_id, threadId);
+    }
     return;
   }
 
@@ -528,7 +688,6 @@ bot.on('callback_query', async (query) => {
       reply_markup: { inline_keyboard: confirmButtons }
     });
     autoDeleteMessage(chatId, message.message_id, threadId);
-    await bot.answerCallbackQuery(query.id);
     return;
   }
 
@@ -547,7 +706,6 @@ bot.on('callback_query', async (query) => {
       message_thread_id: threadId
     });
     autoDeleteMessage(chatId, message.message_id, threadId);
-    await bot.answerCallbackQuery(query.id);
     return;
   }
 
@@ -561,14 +719,13 @@ bot.on('callback_query', async (query) => {
       message_thread_id: threadId
     });
     autoDeleteMessage(chatId, message.message_id, threadId);
-    await bot.answerCallbackQuery(query.id);
     return;
   }
 
   // Verificar si el grupo está activo antes de procesar otras acciones
   if (!isAllowedContext(chatId, threadId)) return;
 
-  // Registrar el comando en el historial
+  // Inicializar commandHistory[userId] si no existe
   if (!commandHistory[userId]) commandHistory[userId] = [];
 
   // Otras acciones de botones
@@ -616,7 +773,7 @@ bot.on('callback_query', async (query) => {
       commandHistory[userId].push({ command: 'stats', response });
       autoDeleteMessage(chatId, message.message_id, threadId);
     } else if (action === 'logs') {
-      const response = `📜 *Logs de Render* 📜\n\n\`\`\`\n${renderLogs}\n\`\`\`\n\n🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
+      const response = `📜 *Últimas 10 líneas de Logs de Render* 📜\n\n\`\`\`\n${renderLogsLimited}\n\`\`\`\n\n🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
       const message = await bot.sendMessage(chatId, response, { parse_mode: 'Markdown', message_thread_id: threadId, reply_to_message_id: messageId, ...mainMenu, ...addNavigationButtons(userId, commandHistory[userId].length - 1) });
       commandHistory[userId].push({ command: '/logs', response });
       autoDeleteMessage(chatId, message.message_id, threadId);
@@ -634,7 +791,6 @@ bot.on('callback_query', async (query) => {
         autoDeleteMessage(chatId, message.message_id, threadId);
       }
     }
-    await bot.answerCallbackQuery(query.id);
   } catch (error) {
     logAction('callback_error', { action, error: error.message });
     const message = await bot.sendMessage(chatId, `❌ ${userMention}, ocurrió un error: ${error.message} ⚠️${adminMessage}`, { message_thread_id: threadId, parse_mode: 'Markdown', reply_to_message_id: messageId });
