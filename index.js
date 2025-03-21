@@ -254,8 +254,16 @@ function formatResponse(msg, result, originalUrl) {
     : 'No disponible';
 
   const serverReal = result.type === 'Xtream Codes' 
-    ? escapeMarkdown(result.server) 
-    : escapeMarkdown(result.server);
+    ? result.server 
+    : result.server;
+
+  // Asegurar que serverReal sea una URL válida y codificarla
+  let serverRealLink = serverReal;
+  try {
+    serverRealLink = encodeURI(serverReal);
+  } catch (e) {
+    serverRealLink = serverReal; // Si no es una URL válida, se muestra como texto
+  }
 
   const response = `✨ Hola ${userMention}, aquí tienes los detalles de tu lista IPTV ✨\n\n` +
     `📅 *Fecha y hora*: ${timestamp}\n` +
@@ -266,7 +274,7 @@ function formatResponse(msg, result, originalUrl) {
     `⏰ *Expira*: ${result.expiresAt || 'No disponible'}\n` +
     `🔗 *Conexiones*: ${result.activeConnections !== undefined ? `${result.activeConnections}/${result.maxConnections}` : 'No disponible'}\n` +
     `📺 *Canales*: ${result.totalChannels || 0}\n` +
-    `🌐 *Servidor Real*: [${serverReal}](${serverReal})\n` +
+    `🌐 *Servidor Real*: [${escapeMarkdown(serverReal)}](${serverRealLink})\n` +
     `⏲ *Zona horaria*: ${result.timezone || 'No disponible'}\n\n` +
     `🚀 *${botName} - Verificación Profesional y Gratuita*${adminMessage}`;
 
