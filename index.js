@@ -26,9 +26,8 @@ const ALLOWED_CHAT_IDS = [
 
 // Almacenar datos
 let userHistory = {};
-let commandHistory = {}; // Nuevo: Historial de comandos para navegación
+let commandHistory = {}; // Historial de comandos para navegación
 let alerts = {};
-let backups = {};
 let stats = { totalChecks: 0, uniqueUsers: new Set(), activeAlerts: 0 };
 const logsFile = 'bot_logs.json';
 const statsFile = 'bot_stats.json';
@@ -265,114 +264,7 @@ async function searchMirrorsFromIPTVCat(serverUrl) {
   }
 }
 
-// Consultar Free-IPTV en GitHub
-async function searchMirrorsFromFreeIPTV(serverUrl) {
-  try {
-    const url = new URL(serverUrl);
-    const domain = url.hostname;
-    const baseDomain = domain.split('.').slice(-2).join('.');
-
-    const m3uUrl = 'https://raw.githubusercontent.com/Free-IPTV/Countries/master/World.m3u';
-    const response = await axios.get(m3uUrl, { timeout: 5000 });
-    const lines = response.data.split('\n');
-
-    const mirrors = [];
-    for (const line of lines) {
-      if (line.startsWith('http')) {
-        try {
-          const mirrorUrl = new URL(line.trim());
-          const mirrorDomain = mirrorUrl.hostname;
-          if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
-            try {
-              const headResponse = await axios.head(mirrorUrl.href, { timeout: 3000 });
-              if (headResponse.status === 200) {
-                mirrors.push(mirrorUrl.href);
-              }
-            } catch (error) {
-              // Ignorar servidores inactivos
-            }
-          }
-        } catch (error) {
-          // Ignorar líneas mal formadas
-        }
-      }
-    }
-    return mirrors;
-  } catch (error) {
-    logAction('free_iptv_error', { error: error.message });
-    return [];
-  }
-}
-
-// Consultar iptv-org.github.io
-async function searchMirrorsFromIPTVOrg(serverUrl) {
-  try {
-    const url = new URL(serverUrl);
-    const domain = url.hostname;
-    const baseDomain = domain.split('.').slice(-2).join('.');
-
-    const m3uUrl = 'https://iptv-org.github.io/iptv/index.m3u';
-    const response = await axios.get(m3uUrl, { timeout: 5000 });
-    const lines = response.data.split('\n');
-
-    const mirrors = [];
-    for (const line of lines) {
-      if (line.startsWith('http')) {
-        try {
-          const mirrorUrl = new URL(line.trim());
-          const mirrorDomain = mirrorUrl.hostname;
-          if (mirrorDomain.includes(baseDomain) && mirrorUrl.href !== serverUrl) {
-            try {
-              const headResponse = await axios.head(mirrorUrl.href, { timeout: 3000 });
-              if (headResponse.status === 200) {
-                mirrors.push(mirrorUrl.href);
-              }
-            } catch (error) {
-              // Ignorar servidores inactivos
-            }
-          }
-        } catch (error) {
-          // Ignorar líneas mal formadas
-        }
-      }
-    }
-    return mirrors;
-  } catch (error) {
-    logAction('iptv_org_error', { error: error.message });
-    return [];
-  }
-}
-
-// Nueva función: Buscar el comando /espejo en sitios externos
-async function searchMirrorsInExternalSites(serverUrl) {
-  const urlsToSearch = [
-    'https://stbstalker.alaaeldinee.com/?m=1',
-    'https://sat-forum.net/viewtopic.php?t=860&start=510'
-  ];
-  const results = [];
-
-  for (const url of urlsToSearch) {
-    try {
-      const response = await axios.get(url, { timeout: 5000 });
-      const $ = cheerio.load(response.data);
-
-      // Buscar menciones de /espejo o /espejos
-      const text = $('body').text();
-      if (text.includes('/espejo') || text.includes('/espejos')) {
-        results.push(`Encontrado en ${url}: /espejo o /espejos mencionado.`);
-      } else {
-        results.push(`No encontrado en ${url}.`);
-      }
-    } catch (error) {
-      logAction('external_site_error', { url, error: error.message });
-      results.push(`Error al buscar en ${url}: ${error.message}`);
-    }
-  }
-
-  return results;
-}
-
-// Verificar lista IPTV con más compatibilidad
+// Verificar lista IPTV (simplificado)
 async function checkIPTVList(url) {
   logAction('check_start', { url });
   try {
@@ -383,15 +275,13 @@ async function checkIPTVList(url) {
     if (url.includes('get.php')) {
       const [, params] = url.split('?');
       const queryParams = Object.fromEntries(new URLSearchParams(params));
-      const { username, password, output = 'm3u_plus' } = queryParams;
+      const { username, password } = queryParams;
       const server = url.split('/get.php')[0];
       const apiUrl = `${server}/player_api.php?username=${username}&password=${password}`;
 
       const response = await axios.get(apiUrl, { timeout: 3000 });
       const { user_info, server_info } = response.data;
       const streams = await axios.get(`${apiUrl}&action=get_live_streams`, { timeout: 3000 });
-      const vod = await axios.get(`${apiUrl}&action=get_vod_streams`, { timeout: 3000 });
-      const series = await axios.get(`${apiUrl}&action=get_series`, { timeout: 3000 });
 
       logAction('check_xtream_success', { url, channels: streams.data.length });
       return {
@@ -405,11 +295,7 @@ async function checkIPTVList(url) {
         activeConnections: user_info.active_cons,
         maxConnections: user_info.max_connections,
         channels: streams.data.slice(0, 10).map(s => s.name),
-        movies: vod.data.slice(0, 5).map(v => v.name),
-        series: series.data.slice(0, 5).map(s => s.name),
         totalChannels: streams.data.length,
-        totalMovies: vod.data.length,
-        totalSeries: series.data.length,
         timezone: server_info.timezone || 'Desconocida'
       };
     }
@@ -425,11 +311,7 @@ async function checkIPTVList(url) {
         type: 'M3U/M3U8',
         status: channels.length > 0 ? 'Activa' : 'Inactiva',
         channels,
-        movies: [],
-        series: [],
         totalChannels: lines.filter(line => line.startsWith('#EXTINF')).length,
-        totalMovies: 0,
-        totalSeries: 0,
         server: url
       };
     }
@@ -442,11 +324,7 @@ async function checkIPTVList(url) {
         type: 'Enlace Directo',
         status: response.status === 200 ? 'Activa' : 'Inactiva',
         channels: ['Stream directo'],
-        movies: [],
-        series: [],
         totalChannels: 1,
-        totalMovies: 0,
-        totalSeries: 0,
         server: url
       };
     }
@@ -458,127 +336,13 @@ async function checkIPTVList(url) {
       type: 'Genérico',
       status: response.status === 200 ? 'Activa' : 'Inactiva',
       channels: ['Contenido no detallado'],
-      movies: [],
-      series: [],
       totalChannels: 1,
-      totalMovies: 0,
-      totalSeries: 0,
       server: url
     };
   } catch (error) {
     const errorMsg = error.response?.status === 404 ? 'Servidor no encontrado (404)' : error.message.includes('timeout') ? 'Tiempo agotado' : error.message;
     logAction('check_error', { url, error: errorMsg });
     return { type: 'Desconocido', status: 'Error', error: errorMsg, server: url };
-  }
-}
-
-// Escanear lista IPTV para estadísticas detalladas
-async function scanIPTVList(url) {
-  try {
-    url = url.trim();
-    if (!url.startsWith('http')) url = `http://${url}`;
-
-    let result = { activeChannels: 0, inactiveChannels: 0, categories: {}, totalChannels: 0, totalMovies: 0, totalSeries: 0 };
-
-    // 1. Xtream Codes
-    if (url.includes('get.php')) {
-      const [, params] = url.split('?');
-      const queryParams = Object.fromEntries(new URLSearchParams(params));
-      const { username, password } = queryParams;
-      const server = url.split('/get.php')[0];
-      const apiUrl = `${server}/player_api.php?username=${username}&password=${password}`;
-
-      const response = await axios.get(apiUrl, { timeout: 3000 });
-      const { user_info } = response.data;
-      const streams = await axios.get(`${apiUrl}&action=get_live_streams`, { timeout: 3000 });
-      const vod = await axios.get(`${apiUrl}&action=get_vod_streams`, { timeout: 3000 });
-      const series = await axios.get(`${apiUrl}&action=get_series`, { timeout: 3000 });
-
-      result.totalChannels = streams.data.length;
-      result.totalMovies = vod.data.length;
-      result.totalSeries = series.data.length;
-
-      for (const stream of streams.data.slice(0, 50)) {
-        try {
-          const streamUrl = `${server}/live/${username}/${password}/${stream.stream_id}.ts`;
-          const headResponse = await axios.head(streamUrl, { timeout: 2000 });
-          if (headResponse.status === 200) result.activeChannels++;
-          else result.inactiveChannels++;
-        } catch (error) {
-          result.inactiveChannels++;
-        }
-      }
-
-      streams.data.forEach(stream => {
-        const category = stream.category_name || 'Sin categoría';
-        result.categories[category] = (result.categories[category] || 0) + 1;
-      });
-
-      return result;
-    }
-
-    // 2. M3U/M3U8
-    if (url.endsWith('.m3u') || url.endsWith('.m3u8')) {
-      const response = await axios.get(url, { timeout: 3000 });
-      const lines = response.data.split('\n');
-      const channelLines = lines.filter(line => line.startsWith('#EXTINF'));
-
-      result.totalChannels = channelLines.length;
-
-      for (let i = 0; i < Math.min(channelLines.length, 50); i++) {
-        const channelLine = channelLines[i];
-        const streamUrl = lines[lines.indexOf(channelLine) + 1];
-        if (!streamUrl || !streamUrl.startsWith('http')) continue;
-
-        try {
-          const headResponse = await axios.head(streamUrl, { timeout: 2000 });
-          if (headResponse.status === 200) result.activeChannels++;
-          else result.inactiveChannels++;
-        } catch (error) {
-          result.inactiveChannels++;
-        }
-      }
-
-      channelLines.forEach(line => {
-        const categoryMatch = line.match(/group-title="([^"]+)"/);
-        const category = categoryMatch ? categoryMatch[1] : 'Sin categoría';
-        result.categories[category] = (result.categories[category] || 0) + 1;
-      });
-
-      return result;
-    }
-
-    return result;
-  } catch (error) {
-    logAction('scan_error', { url, error: error.message });
-    return { error: error.message };
-  }
-}
-
-// Realizar prueba de velocidad
-async function speedTestIPTV(url) {
-  try {
-    url = url.trim();
-    if (!url.startsWith('http')) url = `http://${url}`;
-
-    const startTime = Date.now();
-    const response = await axios.head(url, { timeout: 5000 });
-    const latency = Date.now() - startTime;
-
-    let downloadSpeed = 'No disponible';
-    if (url.endsWith('.ts') || url.includes('hls')) {
-      const startDownload = Date.now();
-      const { data } = await axios.get(url, { responseType: 'stream', timeout: 5000, maxContentLength: 1024 * 1024 });
-      const endDownload = Date.now();
-      const downloadTime = (endDownload - startDownload) / 1000;
-      const sizeInMB = 1;
-      downloadSpeed = ((sizeInMB * 8) / downloadTime).toFixed(2) + ' Mbps';
-    }
-
-    return { latency: `${latency} ms`, downloadSpeed };
-  } catch (error) {
-    logAction('speedtest_error', { url, error: error.message });
-    return { error: error.message };
   }
 }
 
@@ -599,23 +363,17 @@ function formatResponse(msg, result, previousMessageId = null) {
     `${result.activeConnections !== undefined ? `🔗 *Conexiones activas*: ${result.activeConnections}\n` : ''}` +
     `${result.maxConnections !== undefined ? `🔗 *Conexiones máximas*: ${result.maxConnections}\n` : ''}` +
     `📊 *Total de canales*: ${result.totalChannels || 0}\n` +
-    `🎬 *Total de películas*: ${result.totalMovies || 0}\n` +
-    `📽 *Total de series*: ${result.totalSeries || 0}\n` +
     `${result.timezone ? `⏲ *Zona horaria*: ${result.timezone}\n` : ''}` +
     `${result.error ? `⚠️ *Error*: ${escapeMarkdown(result.error)}\n` : ''}` +
     `${result.error ? `💡 *Sugerencia*: Prueba con /espejos ${escapeMarkdown(result.server)} para buscar servidores alternativos.\n` : ''}\n` +
     `📺 *Canales (muestra)*: ${result.channels?.length > 0 ? result.channels.map(c => escapeMarkdown(c)).join(' 🌐 ') : 'No disponible'}\n` +
     `${result.channels?.length < result.totalChannels ? `*(+${result.totalChannels - result.channels.length} más)*` : ''}\n\n` +
-    `🎬 *Películas (muestra)*: ${result.movies?.length > 0 ? result.movies.map(m => escapeMarkdown(m)).join(' 🌐 ') : 'No disponible'}\n` +
-    `${result.movies?.length < result.totalMovies ? `*(+${result.totalMovies - result.movies.length} más)*` : ''}\n\n` +
-    `📽 *Series (muestra)*: ${result.series?.length > 0 ? result.series.map(s => escapeMarkdown(s)).join(' 🌐 ') : 'No disponible'}\n` +
-    `${result.series?.length < result.totalSeries ? `*(+${result.totalSeries - result.series.length} más)*` : ''}\n\n` +
     `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
 
   return { text: response, replyTo: previousMessageId };
 }
 
-// Menú principal mejorado con botones profesionales
+// Menú principal simplificado
 const mainMenu = {
   reply_markup: {
     inline_keyboard: [
@@ -626,18 +384,12 @@ const mainMenu = {
       ],
       [
         { text: '⏱ Configurar Alerta', callback_data: 'alert' },
-        { text: '📊 Escanear Lista', callback_data: 'scan' },
-        { text: '⚡ Prueba de Velocidad', callback_data: 'speedtest' }
-      ],
-      [
-        { text: '🆚 Comparar Listas', callback_data: 'compare' },
-        { text: '💾 Hacer Backup', callback_data: 'backup' },
-        { text: '🗑 Limpiar Historial', callback_data: 'clear' }
+        { text: '🗑 Limpiar Historial', callback_data: 'clear' },
+        { text: 'ℹ️ Ayuda', callback_data: 'help' }
       ],
       [
         { text: '📈 Estadísticas', callback_data: 'stats' },
-        { text: '📜 Ver Logs', callback_data: 'logs' },
-        { text: 'ℹ️ Ayuda', callback_data: 'help' }
+        { text: '📜 Ver Logs', callback_data: 'logs' }
       ]
     ]
   }
@@ -813,27 +565,6 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  // Manejo de restaurar backup
-  if (action === 'restore_backup') {
-    if (backups[userId]) {
-      userHistory[userId] = backups[userId];
-      delete backups[userId];
-      const message = await bot.sendMessage(chatId, `💾 ${userMention}, tu historial ha sido restaurado con éxito. 🎉${adminMessage}`, {
-        parse_mode: 'Markdown',
-        message_thread_id: threadId
-      });
-      autoDeleteMessage(chatId, message.message_id, threadId);
-    } else {
-      const message = await bot.sendMessage(chatId, `❌ ${userMention}, no tienes un backup para restaurar. 💾${adminMessage}`, {
-        parse_mode: 'Markdown',
-        message_thread_id: threadId
-      });
-      autoDeleteMessage(chatId, message.message_id, threadId);
-    }
-    await bot.answerCallbackQuery(query.id);
-    return;
-  }
-
   // Verificar si el grupo está activo antes de procesar otras acciones
   if (!isAllowedContext(chatId, threadId)) return;
 
@@ -870,41 +601,6 @@ bot.on('callback_query', async (query) => {
       const message = await bot.sendMessage(chatId, response, { message_thread_id: threadId, parse_mode: 'Markdown', reply_to_message_id: messageId });
       commandHistory[userId].push({ command: 'alert', response });
       autoDeleteMessage(chatId, message.message_id, threadId);
-    } else if (action === 'scan') {
-      const response = `📊 ${userMention}, envía un enlace IPTV para escanear (M3U o Xtream): 🔎${adminMessage}`;
-      const message = await bot.sendMessage(chatId, response, { message_thread_id: threadId, parse_mode: 'Markdown', reply_to_message_id: messageId });
-      commandHistory[userId].push({ command: 'scan', response });
-      autoDeleteMessage(chatId, message.message_id, threadId);
-    } else if (action === 'speedtest') {
-      const response = `⚡ ${userMention}, envía un enlace IPTV para realizar una prueba de velocidad: 🚀${adminMessage}`;
-      const message = await bot.sendMessage(chatId, response, { message_thread_id: threadId, parse_mode: 'Markdown', reply_to_message_id: messageId });
-      commandHistory[userId].push({ command: 'speedtest', response });
-      autoDeleteMessage(chatId, message.message_id, threadId);
-    } else if (action === 'compare') {
-      const response = `🆚 ${userMention}, envía dos enlaces IPTV para comparar (separados por espacio):\nEjemplo: http://server1.com http://server2.com ⚖️${adminMessage}`;
-      const message = await bot.sendMessage(chatId, response, { message_thread_id: threadId, parse_mode: 'Markdown', reply_to_message_id: messageId });
-      commandHistory[userId].push({ command: 'compare', response });
-      autoDeleteMessage(chatId, message.message_id, threadId);
-    } else if (action === 'backup') {
-      if (!userHistory[userId] || userHistory[userId].length === 0) {
-        const response = `❌ ${userMention}, no tienes historial para hacer backup. 📜${adminMessage}`;
-        const message = await bot.sendMessage(chatId, response, { message_thread_id: threadId, parse_mode: 'Markdown', reply_to_message_id: messageId, ...mainMenu });
-        commandHistory[userId].push({ command: 'backup', response });
-        autoDeleteMessage(chatId, message.message_id, threadId);
-      } else {
-        backups[userId] = userHistory[userId];
-        const backupMessage = `💾 ${userMention}, tu historial ha sido guardado. Puedes restaurarlo cuando quieras.\n\n` +
-          `📜 *Últimas verificaciones guardadas*:\n${userHistory[userId].slice(-3).map(h => `- ${escapeMarkdown(h.url)} (${h.result.status})`).join('\n')}\n\n` +
-          `🔄 Usa el botón para restaurar tu historial en cualquier momento.`;
-        const privateMessage = await bot.sendMessage(userId, backupMessage, {
-          parse_mode: 'Markdown',
-          reply_markup: { inline_keyboard: [[{ text: '🔄 Restaurar Historial', callback_data: 'restore_backup' }]] }
-        });
-        const response = `💾 ${userMention}, tu historial ha sido guardado. Revisa tus mensajes privados para restaurarlo. 📩${adminMessage}`;
-        const groupMessage = await bot.sendMessage(chatId, response, { message_thread_id: threadId, parse_mode: 'Markdown', reply_to_message_id: messageId, ...mainMenu, ...addNavigationButtons(userId, commandHistory[userId].length - 1) });
-        commandHistory[userId].push({ command: 'backup', response });
-        autoDeleteMessage(chatId, groupMessage.message_id, threadId);
-      }
     } else if (action === 'help') {
       const response = `ℹ️ ${userMention}, aquí tienes la ayuda de *${botName}* ℹ️\n\n- Envía un enlace IPTV para verificarlo.\n- Usa /iptv para el menú.\n- Gratis y sin límites.\n- Usa /guia para más detalles. 📖${adminMessage}`;
       const message = await bot.sendMessage(chatId, response, { parse_mode: 'Markdown', message_thread_id: threadId, reply_to_message_id: messageId, ...mainMenu, ...addNavigationButtons(userId, commandHistory[userId].length - 1) });
@@ -962,7 +658,7 @@ bot.onText(/\/iptv/, async (msg) => {
     return;
   }
 
-  const response = `🌟 ¡Bienvenido ${userMention} a *${botName}*! 🌟\n\nSoy un bot gratuito para verificar y gestionar listas IPTV. Usa los botones o envía un enlace directamente.\n\n*Comandos disponibles*:\n/iptv - Iniciar\n/guia - Ayuda\n/espejos - Buscar servidores alternativos\n/scan - Escanear lista\n/speedtest - Prueba de velocidad\n/compare - Comparar listas\n/backup - Guardar historial\n/stats - Ver estadísticas\n/limpiar - Borrar historial\n/logs - Ver logs de render\n/on - Activar bot\n/off - Desactivar bot${adminMessage}`;
+  const response = `🌟 ¡Bienvenido ${userMention} a *${botName}*! 🌟\n\nSoy un bot gratuito para verificar y gestionar listas IPTV. Usa los botones o envía un enlace directamente.\n\n*Comandos disponibles*:\n/iptv - Iniciar\n/guia - Ayuda\n/espejos - Buscar servidores alternativos\n/stats - Ver estadísticas\n/limpiar - Borrar historial\n/logs - Ver logs de render\n/on - Activar bot\n/off - Desactivar bot${adminMessage}`;
   const message = await bot.sendMessage(chatId, response, {
     parse_mode: 'Markdown',
     message_thread_id: threadId,
@@ -987,15 +683,11 @@ bot.onText(/\/guia/, async (msg) => {
 
   const helpMessage = `📖 *Guía de ${botName}* para ${userMention} 📖\n\n` +
     `✨ *¿Para qué sirve este bot?*\n` +
-    `Soy un bot diseñado para ayudarte a gestionar y verificar listas IPTV de forma gratuita. Puedo analizar el estado de tus listas, buscar servidores alternativos, escanear contenido, medir velocidad, comparar listas y más.\n\n` +
+    `Soy un bot diseñado para ayudarte a gestionar y verificar listas IPTV de forma gratuita. Puedo analizar el estado de tus listas y buscar servidores alternativos.\n\n` +
     `🔧 *¿Cómo funciona?*\n` +
     `- Usa /iptv para iniciar y ver el menú.\n` +
     `- Envía un enlace IPTV para verificarlo (o usa el botón 🔎).\n` +
     `- Usa /espejos para buscar servidores alternativos si uno falla.\n` +
-    `- Usa /scan para escanear una lista y ver estadísticas detalladas.\n` +
-    `- Usa /speedtest para medir la velocidad de un servidor.\n` +
-    `- Usa /compare para comparar dos listas IPTV.\n` +
-    `- Usa /backup para guardar tu historial.\n` +
     `- Todos los mensajes se eliminan automáticamente después de 5 minutos para mantener el canal limpio.\n\n` +
     `📋 *Tipos de listas compatibles*:\n` +
     `- *Xtream Codes*: Ejemplo: http://server.com/get.php?username=xxx&password=yyy\n` +
@@ -1006,10 +698,6 @@ bot.onText(/\/guia/, async (msg) => {
     `/iptv - Iniciar el bot\n` +
     `/guia - Ver esta guía\n` +
     `/espejos <servidor> - Buscar servidores alternativos\n` +
-    `/scan <url> - Escanear una lista\n` +
-    `/speedtest <url> - Medir velocidad del servidor\n` +
-    `/compare <url1> <url2> - Comparar dos listas\n` +
-    `/backup - Guardar tu historial\n` +
     `/stats - Ver estadísticas del bot\n` +
     `/limpiar - Borrar tu historial\n` +
     `/logs - Ver logs de render\n` +
@@ -1018,8 +706,6 @@ bot.onText(/\/guia/, async (msg) => {
     `💡 *Ejemplo de uso*:\n` +
     `- Verificar: http://server.com/get.php?username=xxx&password=yyy\n` +
     `- Buscar espejos: /espejos http://srdigital.win:8080\n` +
-    `- Escanear: /scan http://server.com/playlist.m3u\n` +
-    `- Comparar: /compare http://server1.com http://server2.com\n` +
     `¡Explora y disfruta de un servicio 100% gratis! 🎉${adminMessage}`;
 
   const message = await bot.sendMessage(chatId, helpMessage, {
@@ -1035,7 +721,7 @@ bot.onText(/\/guia/, async (msg) => {
   // No se autoelimina para que la guía permanezca visible
 });
 
-// Comando /espejos (mejorado con estados y búsqueda externa)
+// Comando /espejos (optimizado)
 bot.onText(/\/espejos\s+(.+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
@@ -1078,35 +764,8 @@ bot.onText(/\/espejos\s+(.+)/, async (msg, match) => {
   });
   const iptvCatMirrors = await searchMirrorsFromIPTVCat(server);
 
-  // Actualizar estado: Buscando en Free-IPTV
-  await bot.editMessageText(`🪞 ${userMention}, buscando servidores espejo para ${escapeMarkdown(server)}...\n📡 *Estado*: Buscando en Free-IPTV... 🔍${adminMessage}${logError}`, {
-    chat_id: chatId,
-    message_id: checkingMessage.message_id,
-    message_thread_id: threadId,
-    parse_mode: 'Markdown'
-  });
-  const freeIPTVMirrors = await searchMirrorsFromFreeIPTV(server);
-
-  // Actualizar estado: Buscando en IPTV-Org
-  await bot.editMessageText(`🪞 ${userMention}, buscando servidores espejo para ${escapeMarkdown(server)}...\n📡 *Estado*: Buscando en IPTV-Org... 🔍${adminMessage}${logError}`, {
-    chat_id: chatId,
-    message_id: checkingMessage.message_id,
-    message_thread_id: threadId,
-    parse_mode: 'Markdown'
-  });
-  const iptvOrgMirrors = await searchMirrorsFromIPTVOrg(server);
-
-  // Actualizar estado: Buscando en sitios externos
-  await bot.editMessageText(`🪞 ${userMention}, buscando servidores espejo para ${escapeMarkdown(server)}...\n📡 *Estado*: Buscando en sitios externos... 🔍${adminMessage}${logError}`, {
-    chat_id: chatId,
-    message_id: checkingMessage.message_id,
-    message_thread_id: threadId,
-    parse_mode: 'Markdown'
-  });
-  const externalResults = await searchMirrorsInExternalSites(server);
-
   // Combinar resultados y eliminar duplicados
-  const mirrors = [...new Set([...dynamicMirrors, ...iptvCatMirrors, ...freeIPTVMirrors, ...iptvOrgMirrors])];
+  const mirrors = [...new Set([...dynamicMirrors, ...iptvCatMirrors])];
 
   // Si no se encuentran espejos, usar la base de datos estática
   if (mirrors.length === 0) {
@@ -1116,11 +775,10 @@ bot.onText(/\/espejos\s+(.+)/, async (msg, match) => {
   let response;
   if (mirrors.length > 0) {
     response = `✅ ${userMention}, aquí tienes los servidores espejo para ${escapeMarkdown(server)}:\n\n` +
-      mirrors.map(m => `- ${escapeMarkdown(m)}`).join('\n') + `\n\n📡 *Fuentes*: FastoTV, IPTVCat, Free-IPTV, IPTV-Org\n` +
-      `🌐 *Resultados de sitios externos*:\n${externalResults.join('\n')}${adminMessage}${logError}`;
+      mirrors.map(m => `- ${escapeMarkdown(m)}`).join('\n') + `\n\n📡 *Fuentes*: FastoTV, IPTVCat\n` +
+      `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}${logError}`;
   } else {
     response = `❌ ${userMention}, no se encontraron servidores espejo para ${escapeMarkdown(server)}.\n` +
-      `🌐 *Resultados de sitios externos*:\n${externalResults.join('\n')}\n` +
       `💡 Intenta con otro servidor o contacta al soporte. 📩${adminMessage}${logError}`;
   }
 
@@ -1134,206 +792,6 @@ bot.onText(/\/espejos\s+(.+)/, async (msg, match) => {
 
   if (!commandHistory[userId]) commandHistory[userId] = [];
   commandHistory[userId].push({ command: `/espejos ${server}`, response });
-});
-
-// Comando /scan
-bot.onText(/\/scan\s+(.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id || '0';
-  const userId = msg.from.id;
-  const userMention = getUserMention(msg.from);
-  const url = match[1].trim();
-
-  if (!isAllowedContext(chatId, threadId)) return;
-
-  const scanningMessage = await bot.sendMessage(chatId, `📊 ${userMention}, escaneando la lista ${escapeMarkdown(url)}... 🔎${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId
-  });
-  autoDeleteMessage(chatId, scanningMessage.message_id, threadId);
-
-  await showLoadingAnimation(chatId, threadId, scanningMessage.message_id, `📊 ${userMention}, escaneando la lista ${escapeMarkdown(url)}...`, 2000);
-
-  const result = await scanIPTVList(url);
-
-  if (result.error) {
-    const response = `❌ ${userMention}, ocurrió un error al escanear: ${result.error} ⚠️${adminMessage}`;
-    await bot.editMessageText(response, {
-      chat_id: chatId,
-      message_id: scanningMessage.message_id,
-      message_thread_id: threadId,
-      parse_mode: 'Markdown',
-      ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
-    });
-    if (!commandHistory[userId]) commandHistory[userId] = [];
-    commandHistory[userId].push({ command: `/scan ${url}`, response });
-    return;
-  }
-
-  const topCategories = Object.entries(result.categories)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([category, count]) => `${category}: ${count}`);
-
-  const response = `✅ *Resultado del escaneo para ${userMention}* 📊\n\n` +
-    `📡 *Lista*: ${escapeMarkdown(url)}\n` +
-    `✅ *Canales activos*: ${result.activeChannels}\n` +
-    `❌ *Canales inactivos*: ${result.inactiveChannels}\n` +
-    `📺 *Total de canales*: ${result.totalChannels}\n` +
-    `🎬 *Total de películas*: ${result.totalMovies}\n` +
-    `📽 *Total de series*: ${result.totalSeries}\n` +
-    `🏷 *Categorías principales*:\n${topCategories.length > 0 ? topCategories.join('\n') : 'No disponible'}\n\n` +
-    `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
-
-  await bot.editMessageText(response, {
-    chat_id: chatId,
-    message_id: scanningMessage.message_id,
-    message_thread_id: threadId,
-    parse_mode: 'Markdown',
-    ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
-  });
-
-  if (!commandHistory[userId]) commandHistory[userId] = [];
-  commandHistory[userId].push({ command: `/scan ${url}`, response });
-});
-
-// Comando /speedtest
-bot.onText(/\/speedtest\s+(.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id || '0';
-  const userId = msg.from.id;
-  const userMention = getUserMention(msg.from);
-  const url = match[1].trim();
-
-  if (!isAllowedContext(chatId, threadId)) return;
-
-  const testingMessage = await bot.sendMessage(chatId, `⚡ ${userMention}, realizando prueba de velocidad para ${escapeMarkdown(url)}... 🚀${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId
-  });
-  autoDeleteMessage(chatId, testingMessage.message_id, threadId);
-
-  await showLoadingAnimation(chatId, threadId, testingMessage.message_id, `⚡ ${userMention}, realizando prueba de velocidad para ${escapeMarkdown(url)}...`, 2000);
-
-  const result = await speedTestIPTV(url);
-
-  if (result.error) {
-    const response = `❌ ${userMention}, ocurrió un error: ${result.error} ⚠️${adminMessage}`;
-    await bot.editMessageText(response, {
-      chat_id: chatId,
-      message_id: testingMessage.message_id,
-      message_thread_id: threadId,
-      parse_mode: 'Markdown',
-      ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
-    });
-    if (!commandHistory[userId]) commandHistory[userId] = [];
-    commandHistory[userId].push({ command: `/speedtest ${url}`, response });
-    return;
-  }
-
-  const response = `✅ *Prueba de velocidad para ${userMention}* ⚡\n\n` +
-    `📡 *Servidor*: ${escapeMarkdown(url)}\n` +
-    `⏱ *Latencia*: ${result.latency}\n` +
-    `📥 *Velocidad de descarga*: ${result.downloadSpeed}\n\n` +
-    `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
-
-  await bot.editMessageText(response, {
-    chat_id: chatId,
-    message_id: testingMessage.message_id,
-    message_thread_id: threadId,
-    parse_mode: 'Markdown',
-    ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
-  });
-
-  if (!commandHistory[userId]) commandHistory[userId] = [];
-  commandHistory[userId].push({ command: `/speedtest ${url}`, response });
-});
-
-// Comando /compare
-bot.onText(/\/compare\s+(.+)\s+(.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id || '0';
-  const userId = msg.from.id;
-  const userMention = getUserMention(msg.from);
-  const url1 = match[1].trim();
-  const url2 = match[2].trim();
-
-  if (!isAllowedContext(chatId, threadId)) return;
-
-  const comparingMessage = await bot.sendMessage(chatId, `🆚 ${userMention}, comparando ${escapeMarkdown(url1)} con ${escapeMarkdown(url2)}... ⚖️${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId
-  });
-  autoDeleteMessage(chatId, comparingMessage.message_id, threadId);
-
-  await showLoadingAnimation(chatId, threadId, comparingMessage.message_id, `🆚 ${userMention}, comparando ${escapeMarkdown(url1)} con ${escapeMarkdown(url2)}...`, 2000);
-
-  const [result1, result2] = await Promise.all([
-    checkIPTVList(url1),
-    checkIPTVList(url2)
-  ]);
-
-  const response = `✅ *Comparación de listas para ${userMention}* 🆚\n\n` +
-    `📡 *Lista 1*: ${escapeMarkdown(url1)}\n` +
-    `📜 *Tipo*: ${result1.type}\n` +
-    `${result1.status === 'Active' || result1.status === 'Activa' ? '✅' : '❌'} *Estado*: ${result1.status}\n` +
-    `📺 *Canales*: ${result1.totalChannels || 0}\n` +
-    `🎬 *Películas*: ${result1.totalMovies || 0}\n` +
-    `📽 *Series*: ${result1.totalSeries || 0}\n` +
-    `${result1.error ? `⚠️ *Error*: ${result1.error}\n` : ''}\n` +
-    `📡 *Lista 2*: ${escapeMarkdown(url2)}\n` +
-    `📜 *Tipo*: ${result2.type}\n` +
-    `${result2.status === 'Active' || result2.status === 'Activa' ? '✅' : '❌'} *Estado*: ${result2.status}\n` +
-    `📺 *Canales*: ${result2.totalChannels || 0}\n` +
-    `🎬 *Películas*: ${result2.totalMovies || 0}\n` +
-    `📽 *Series*: ${result2.totalSeries || 0}\n` +
-    `${result2.error ? `⚠️ *Error*: ${result2.error}\n` : ''}\n\n` +
-    `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`;
-
-  await bot.editMessageText(response, {
-    chat_id: chatId,
-    message_id: comparingMessage.message_id,
-    message_thread_id: threadId,
-    parse_mode: 'Markdown',
-    ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
-  });
-
-  if (!commandHistory[userId]) commandHistory[userId] = [];
-  commandHistory[userId].push({ command: `/compare ${url1} ${url2}`, response });
-});
-
-// Comando /backup
-bot.onText(/\/backup/, async (msg) => {
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id || '0';
-  const userId = msg.from.id;
-  const userMention = getUserMention(msg.from);
-
-  if (!isAllowedContext(chatId, threadId)) return;
-
-  if (!userHistory[userId] || userHistory[userId].length === 0) {
-    const response = `❌ ${userMention}, no tienes historial para hacer backup. 📜${adminMessage}`;
-    const message = await bot.sendMessage(chatId, response, { message_thread_id: threadId, parse_mode: 'Markdown', ...mainMenu, ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0) });
-    if (!commandHistory[userId]) commandHistory[userId] = [];
-    commandHistory[userId].push({ command: '/backup', response });
-    autoDeleteMessage(chatId, message.message_id, threadId);
-    return;
-  }
-
-  backups[userId] = userHistory[userId];
-  const backupMessage = `💾 ${userMention}, tu historial ha sido guardado. Puedes restaurarlo cuando quieras.\n\n` +
-    `📜 *Últimas verificaciones guardadas*:\n${userHistory[userId].slice(-3).map(h => `- ${escapeMarkdown(h.url)} (${h.result.status})`).join('\n')}\n\n` +
-    `🔄 Usa el botón para restaurar tu historial en cualquier momento.`;
-  await bot.sendMessage(userId, backupMessage, {
-    parse_mode: 'Markdown',
-    reply_markup: { inline_keyboard: [[{ text: '🔄 Restaurar Historial', callback_data: 'restore_backup' }]] }
-  });
-
-  const response = `💾 ${userMention}, tu historial ha sido guardado. Revisa tus mensajes privados para restaurarlo. 📩${adminMessage}`;
-  const message = await bot.sendMessage(chatId, response, { message_thread_id: threadId, parse_mode: 'Markdown', ...mainMenu, ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0) });
-  if (!commandHistory[userId]) commandHistory[userId] = [];
-  commandHistory[userId].push({ command: '/backup', response });
-  autoDeleteMessage(chatId, message.message_id, threadId);
 });
 
 // Comando /stats
@@ -1413,117 +871,117 @@ bot.on('message', async (msg) => {
 
   if (!isAllowedContext(chatId, threadId)) return;
 
-    const isIPTV = text.match(/(http|https):\/\/[^\s]+/) || text.includes('get.php') || text.includes('.m3u') || text.includes('.m3u8') || text.includes('.ts') || text.includes('hls');
+  const isIPTV = text.match(/(http|https):\/\/[^\s]+/) || text.includes('get.php') || text.includes('.m3u') || text.includes('.m3u8') || text.includes('.ts') || text.includes('hls');
 
-    // Configurar alerta
-    if (text.match(/(http|https):\/\/[^\s]+\s+\d+/)) {
-      const [url, days] = text.split(/\s+/);
-      const daysNum = parseInt(days);
+  // Configurar alerta
+  if (text.match(/(http|https):\/\/[^\s]+\s+\d+/)) {
+    const [url, days] = text.split(/\s+/);
+    const daysNum = parseInt(days);
 
-      if (isNaN(daysNum) || daysNum < 1) {
-        const message = await bot.sendMessage(chatId, `❌ ${userMention}, por favor especifica un número válido de días. Ejemplo: http://server.com 3 ⏰${adminMessage}`, {
-          parse_mode: 'Markdown',
-          message_thread_id: threadId
-        });
-        autoDeleteMessage(chatId, message.message_id, threadId);
-        return;
-      }
-
-      if (!alerts[userId]) alerts[userId] = [];
-      alerts[userId].push({ url, days: daysNum, lastChecked: null, chatId, threadId });
-      stats.activeAlerts++;
-      saveStats();
-
-      const message = await bot.sendMessage(chatId, `⏱ ${userMention}, alerta configurada para ${escapeMarkdown(url)} cada ${daysNum} día(s). Te notificaré cuando cambie su estado. 🔔${adminMessage}`, {
+    if (isNaN(daysNum) || daysNum < 1) {
+      const message = await bot.sendMessage(chatId, `❌ ${userMention}, por favor especifica un número válido de días. Ejemplo: http://server.com 3 ⏰${adminMessage}`, {
         parse_mode: 'Markdown',
-        message_thread_id: threadId,
-        ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
+        message_thread_id: threadId
       });
-
-      if (!commandHistory[userId]) commandHistory[userId] = [];
-      commandHistory[userId].push({ command: `Alerta ${url} ${daysNum}`, response: `⏱ ${userMention}, alerta configurada para ${escapeMarkdown(url)} cada ${daysNum} día(s). Te notificaré cuando cambie su estado. 🔔${adminMessage}` });
-
       autoDeleteMessage(chatId, message.message_id, threadId);
       return;
     }
 
-    // Verificar lista IPTV
-    if (isIPTV && !text.startsWith('/')) {
-      const url = text.match(/(http|https):\/\/[^\s]+/)?.[0] || text;
-      stats.totalChecks++;
-      stats.uniqueUsers.add(userId);
-      saveStats();
+    if (!alerts[userId]) alerts[userId] = [];
+    alerts[userId].push({ url, days: daysNum, lastChecked: null, chatId, threadId });
+    stats.activeAlerts++;
+    saveStats();
 
-      const checkingMessage = await bot.sendMessage(chatId, `🔎 ${userMention}, verificando la lista ${escapeMarkdown(url)}... 📡${adminMessage}`, {
-        parse_mode: 'Markdown',
-        message_thread_id: threadId,
-        reply_to_message_id: replyToMessage?.message_id
-      });
-      autoDeleteMessage(chatId, checkingMessage.message_id, threadId);
+    const message = await bot.sendMessage(chatId, `⏱ ${userMention}, alerta configurada para ${escapeMarkdown(url)} cada ${daysNum} día(s). Te notificaré cuando cambie su estado. 🔔${adminMessage}`, {
+      parse_mode: 'Markdown',
+      message_thread_id: threadId,
+      ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
+    });
 
-      await showLoadingAnimation(chatId, threadId, checkingMessage.message_id, `🔎 ${userMention}, verificando la lista ${escapeMarkdown(url)}...`, 2000);
+    if (!commandHistory[userId]) commandHistory[userId] = [];
+    commandHistory[userId].push({ command: `Alerta ${url} ${daysNum}`, response: `⏱ ${userMention}, alerta configurada para ${escapeMarkdown(url)} cada ${daysNum} día(s). Te notificaré cuando cambie su estado. 🔔${adminMessage}` });
 
-      const result = await checkIPTVList(url);
+    autoDeleteMessage(chatId, message.message_id, threadId);
+    return;
+  }
 
-      if (!userHistory[userId]) userHistory[userId] = [];
-      userHistory[userId].push({ url, result, timestamp: new Date() });
+  // Verificar lista IPTV
+  if (isIPTV && !text.startsWith('/')) {
+    const url = text.match(/(http|https):\/\/[^\s]+/)?.[0] || text;
+    stats.totalChecks++;
+    stats.uniqueUsers.add(userId);
+    saveStats();
 
-      const { text: responseText } = formatResponse(msg, result, replyToMessage?.message_id);
+    const checkingMessage = await bot.sendMessage(chatId, `🔎 ${userMention}, verificando la lista ${escapeMarkdown(url)}... 📡${adminMessage}`, {
+      parse_mode: 'Markdown',
+      message_thread_id: threadId,
+      reply_to_message_id: replyToMessage?.message_id
+    });
+    autoDeleteMessage(chatId, checkingMessage.message_id, threadId);
 
-      await bot.editMessageText(responseText, {
-        chat_id: chatId,
-        message_id: checkingMessage.message_id,
-        message_thread_id: threadId,
-        parse_mode: 'Markdown',
-        reply_to_message_id: replyToMessage?.message_id,
-        ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
-      });
+    await showLoadingAnimation(chatId, threadId, checkingMessage.message_id, `🔎 ${userMention}, verificando la lista ${escapeMarkdown(url)}...`, 2000);
 
-      if (!commandHistory[userId]) commandHistory[userId] = [];
-      commandHistory[userId].push({ command: `Verificar ${url}`, response: responseText });
-    }
-  });
+    const result = await checkIPTVList(url);
 
-  // Tarea programada para alertas
-  cron.schedule('0 0 * * *', async () => {
-    const now = new Date();
-    for (const userId in alerts) {
-      const userAlerts = alerts[userId];
-      for (let i = userAlerts.length - 1; i >= 0; i--) {
-        const alert = userAlerts[i];
-        const { url, days, lastChecked, chatId, threadId } = alert;
+    if (!userHistory[userId]) userHistory[userId] = [];
+    userHistory[userId].push({ url, result, timestamp: new Date() });
 
-        const daysSinceLastCheck = lastChecked ? (now - new Date(lastChecked)) / (1000 * 60 * 60 * 24) : days;
-        if (daysSinceLastCheck >= days) {
-          const result = await checkIPTVList(url);
-          alert.lastChecked = now;
+    const { text: responseText } = formatResponse(msg, result, replyToMessage?.message_id);
 
-          const userMention = getUserMention({ id: userId, first_name: 'Usuario' });
-          const statusChanged = result.status !== alert.lastStatus;
-          alert.lastStatus = result.status;
+    await bot.editMessageText(responseText, {
+      chat_id: chatId,
+      message_id: checkingMessage.message_id,
+      message_thread_id: threadId,
+      parse_mode: 'Markdown',
+      reply_to_message_id: replyToMessage?.message_id,
+      ...addNavigationButtons(userId, commandHistory[userId]?.length - 1 || 0)
+    });
 
-          if (statusChanged) {
-            const message = await bot.sendMessage(chatId, `🔔 ${userMention}, la lista ${escapeMarkdown(url)} ha cambiado de estado:\n` +
-              `${result.status === 'Active' || result.status === 'Activa' ? '✅' : '❌'} *Estado*: ${result.status}\n` +
-              `📡 *Detalles*: ${result.totalChannels || 0} canales, ${result.totalMovies || 0} películas, ${result.totalSeries || 0} series\n` +
-              `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`, {
-              parse_mode: 'Markdown',
-              message_thread_id: threadId
-            });
-            autoDeleteMessage(chatId, message.message_id, threadId);
-          }
+    if (!commandHistory[userId]) commandHistory[userId] = [];
+    commandHistory[userId].push({ command: `Verificar ${url}`, response: responseText });
+  }
+});
+
+// Tarea programada para alertas
+cron.schedule('0 0 * * *', async () => {
+  const now = new Date();
+  for (const userId in alerts) {
+    const userAlerts = alerts[userId];
+    for (let i = userAlerts.length - 1; i >= 0; i--) {
+      const alert = userAlerts[i];
+      const { url, days, lastChecked, chatId, threadId } = alert;
+
+      const daysSinceLastCheck = lastChecked ? (now - new Date(lastChecked)) / (1000 * 60 * 60 * 24) : days;
+      if (daysSinceLastCheck >= days) {
+        const result = await checkIPTVList(url);
+        alert.lastChecked = now;
+
+        const userMention = getUserMention({ id: userId, first_name: 'Usuario' });
+        const statusChanged = result.status !== alert.lastStatus;
+        alert.lastStatus = result.status;
+
+        if (statusChanged) {
+          const message = await bot.sendMessage(chatId, `🔔 ${userMention}, la lista ${escapeMarkdown(url)} ha cambiado de estado:\n` +
+            `${result.status === 'Active' || result.status === 'Activa' ? '✅' : '❌'} *Estado*: ${result.status}\n` +
+            `📡 *Detalles*: ${result.totalChannels || 0} canales\n` +
+            `🚀 *Potenciado por ${botName} - 100% Gratis*${adminMessage}`, {
+            parse_mode: 'Markdown',
+            message_thread_id: threadId
+          });
+          autoDeleteMessage(chatId, message.message_id, threadId);
         }
       }
     }
-  });
+  }
+});
 
-  // Manejo de errores global
-  bot.on('polling_error', (error) => {
-    logAction('polling_error', { error: error.message });
-  });
+// Manejo de errores global
+bot.on('polling_error', (error) => {
+  logAction('polling_error', { error: error.message });
+});
 
-  bot.on('webhook_error', (error) => {
-    logAction('webhook_error', { error: error.message });
-  });
+bot.on('webhook_error', (error) => {
+  logAction('webhook_error', { error: error.message });
+});
 
-  console.log(`🚀 ${botName} iniciado 🎉`);
+console.log(`🚀 ${botName} iniciado 🎉`);
