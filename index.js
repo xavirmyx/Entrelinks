@@ -3,6 +3,7 @@ const express = require('express');
 const cron = require('node-cron');
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
+const xml2js = require('xml2js');
 
 // Token del bot y nombre
 const token = '7861676131:AAFLv4dBIFiHV1OYc8BJH2U8kWPal7lpBMQ';
@@ -18,8 +19,8 @@ app.use(express.json());
 const webhookUrl = 'https://entrelinks.onrender.com';
 
 // Configuración de Supabase
-const supabaseUrl = 'https://aws-0-eu-central-2.pooler.supabase.com';
-const supabaseKey = 'postgresql://postgres.jxpdivtccnhsspvwfpdl:&ww$k4x2!Ttd_ca@aws-0-eu-central-2.pooler.supabase.com:5432/postgres';
+const supabaseUrl = 'https://jxpdivtccnhsspvwfpdl.supabase.co';
+const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4cGRpdnRjY25oc3NwdndmcGRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDI2NDc1MzYsImV4cCI6MjA1ODIyMzUzNn0.oVV31TUxJeCEZZByLb5gsvl9vpme8XZ9XnOKoaZFJKI'; // Reemplaza con tu clave anónima de Supabase
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // IDs permitidos
@@ -38,6 +39,20 @@ let publicLists = []; // Lista temporal para evitar repeticiones
 // Mensaje fijo
 const adminMessage = '\n\n👨‍💼 *Equipo de Administración EntresHijos*';
 
+// Animaciones para cada tipo de lista
+const animations = {
+  country: ['🌍', '🌎', '🌏'],
+  language: ['📖', '✍️', '📚'],
+  category: ['🔍', '🔎', '🕵️'],
+  general: ['📺', '📡', '🎥'],
+  iptvcat: ['🐾', '🐱', '😺'],
+  tdt: ['📻', '📺', '📡'],
+  sports: ['⚽', '🏀', '🏈'],
+  movies: ['🎬', '🍿', '🎥'],
+  music: ['🎵', '🎶', '🎸'],
+  premium: ['💎', '🌟', '✨']
+};
+
 // Registrar logs
 function logAction(action, details) {
   const timestamp = new Date().toLocaleString('es-ES');
@@ -54,7 +69,7 @@ function getUserMention(user) {
   return user.username ? `@${escapeMarkdown(user.username)}` : escapeMarkdown(user.first_name);
 }
 
-// Animación de carga
+// Animación de carga genérica
 async function showLoadingAnimation(chatId, threadId, messageId, baseText) {
   const frames = ['🔍', '⏳', '🔎'];
   let frameIndex = 0;
@@ -64,6 +79,36 @@ async function showLoadingAnimation(chatId, threadId, messageId, baseText) {
 
   for (let i = 0; i < steps; i++) {
     const frame = frames[frameIndex % frames.length];
+    try {
+      await bot.editMessageText(`${baseText} ${frame}`, {
+        chat_id: chatId,
+        message_id: messageId,
+        message_thread_id: threadId === '0' ? undefined : threadId,
+        parse_mode: 'Markdown'
+      });
+    } catch (error) {
+      if (error.response?.status === 429) {
+        const retryAfter = error.response.data.parameters.retry_after || 1;
+        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        continue;
+      }
+      break;
+    }
+    frameIndex++;
+    await new Promise(resolve => setTimeout(resolve, interval));
+  }
+}
+
+// Animación específica para cada tipo de lista
+async function showListAnimation(chatId, threadId, messageId, baseText, listType) {
+  const animationFrames = animations[listType] || ['⏳', '⌛', '⏳'];
+  let frameIndex = 0;
+  const duration = 2000; // Duración de la animación (2 segundos)
+  const interval = 500; // Intervalo entre frames (0.5 segundos)
+  const steps = Math.floor(duration / interval);
+
+  for (let i = 0; i < steps; i++) {
+    const frame = animationFrames[frameIndex % animationFrames.length];
     try {
       await bot.editMessageText(`${baseText} ${frame}`, {
         chat_id: chatId,
@@ -372,25 +417,21 @@ async function checkIPTVList(url, userId) {
       };
     }
 
-    // 5. Soporte para listas XML
+    // 5. Soporte para listas XML (usando xml2js)
     if (url.endsWith('.xml')) {
       const response = await axiosInstance.get(url);
       const xmlData = response.data;
 
-      // Parsear XML básico (esto es un ejemplo simple, podrías usar una librería como xml2js para mayor robustez)
-      const channelRegex = /<channel[^>]*>([\s\S]*?)<\/channel>/g;
-      const channels = [];
-      let match;
-      while ((match = channelRegex.exec(xmlData)) !== null) {
-        const channelData = match[1];
-        const nameMatch = channelData.match(/<name[^>]*>([\s\S]*?)<\/name>/);
-        const urlMatch = channelData.match(/<url[^>]*>([\s\S]*?)<\/url>/);
-        if (nameMatch && urlMatch) {
-          channels.push({
-            name: nameMatch[1].trim() || 'Canal sin nombre',
-            url: urlMatch[1].trim()
-          });
-        }
+      const parser = new xml2js.Parser({ explicitArray: false });
+      const result = await parser.parseStringPromise(xmlData);
+
+      let channels = [];
+      if (result?.channels?.channel) {
+        const channelList = Array.isArray(result.channels.channel) ? result.channels.channel : [result.channels.channel];
+        channels = channelList.map(item => ({
+          name: item.name || item.title || 'Canal sin nombre',
+          url: item.url || item.stream_url
+        }));
       }
 
       if (!channels.length) throw new Error('No se encontraron canales en el XML');
@@ -519,12 +560,12 @@ bot.on('callback_query', async (query) => {
       const helpMessage = `🌟 *Bienvenido a ${botName}, ${userMention}!* 🌟\n\n` +
         `👋 Somos un bot profesional y gratuito exclusivo para *EntresHijos*, diseñado para gestionar y verificar listas IPTV de forma sencilla y eficiente.\n\n` +
         `📋 *Comandos disponibles*:\n` +
-        `- *🔍 /guia*: Muestra esta guía de uso.\n` +
-        `- *💾 /save [nombre]*: Guarda la última lista verificada con un nombre.\n` +
-        `- *📜 /baul*: Lista todas tus listas guardadas.\n` +
-        `- *✅ /registro*: Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
-        `- *🎁 /generar*: Obtiene listas IPTV gratuitas verificadas de múltiples fuentes.\n` +
-        `- *📚 /listaspublicas*: Muestra las listas públicas más recientes con votación.\n\n` +
+        `- *🔍 /guia* - Muestra esta guía de uso.\n` +
+        `- *💾 /save [nombre]* - Guarda la última lista verificada con un nombre.\n` +
+        `- *📜 /baul* - Lista todas tus listas guardadas.\n` +
+        `- *✅ /registro* - Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
+        `- *🎁 /generar* - Obtiene listas IPTV gratuitas verificadas de múltiples fuentes.\n` +
+        `- *📚 /listaspublicas* - Muestra las listas públicas más recientes con votación.\n\n` +
         `🔧 *Cómo usar el bot*:\n` +
         `1️⃣ Usa los botones o envía un enlace IPTV válido.\n` +
         `2️⃣ Recibe un informe detallado al instante.\n\n` +
@@ -615,7 +656,7 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// Comando /iptv (inicio)
+// Comandos
 bot.onText(/\/iptv/, async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
@@ -648,12 +689,12 @@ bot.onText(/\/guia/, async (msg) => {
   const helpMessage = `🌟 *Bienvenido a ${botName}, ${userMention}!* 🌟\n\n` +
     `👋 Somos un bot profesional y gratuito exclusivo para *EntresHijos*, diseñado para gestionar y verificar listas IPTV de forma sencilla y eficiente.\n\n` +
     `📋 *Comandos disponibles*:\n` +
-    `- *🔍 /guia*: Muestra esta guía de uso.\n` +
-    `- *💾 /save [nombre]*: Guarda la última lista verificada con un nombre.\n` +
-    `- *📜 /baul*: Lista todas tus listas guardadas.\n` +
-    `- *✅ /registro*: Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
-    `- *🎁 /generar*: Obtiene listas IPTV gratuitas verificadas de múltiples fuentes.\n` +
-    `- *📚 /listaspublicas*: Muestra las listas públicas más recientes con votación.\n\n` +
+    `- *🔍 /guia* - Muestra esta guía de uso.\n` +
+    `- *💾 /save [nombre]* - Guarda la última lista verificada con un nombre.\n` +
+    `- *📜 /baul* - Lista todas tus listas guardadas.\n` +
+    `- *✅ /registro* - Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
+    `- *🎁 /generar* - Obtiene listas IPTV gratuitas verificadas de múltiples fuentes.\n` +
+    `- *📚 /listaspublicas* - Muestra las listas públicas más recientes con votación.\n\n` +
     `🔧 *Cómo usar el bot*:\n` +
     `1️⃣ Usa los botones o envía un enlace IPTV válido.\n` +
     `2️⃣ Recibe un informe detallado al instante.\n\n` +
@@ -684,15 +725,15 @@ bot.onText(/\/menu/, async (msg) => {
   const menuMessage = `🛠 *Menú Completo de ${botName} para ${userMention}* 🛠\n\n` +
     `👋 Bienvenido al panel de comandos completo de *${botName}*. Aquí tienes todas las herramientas disponibles:\n\n` +
     `📋 *Comandos Públicos*:\n` +
-    `- *🔍 /guia*: Muestra la guía básica para usuarios.\n` +
-    `- *💾 /save [nombre]*: Guarda la última lista verificada con un nombre personalizado.\n` +
-    `- *📜 /baul*: Muestra todas las listas guardadas del usuario.\n` +
-    `- *✅ /registro*: Lista las listas activas guardadas, ordenadas por fecha de caducidad.\n` +
-    `- *🎁 /generar*: Genera y verifica listas IPTV gratuitas de múltiples fuentes.\n` +
-    `- *📚 /listaspublicas*: Muestra las listas públicas más recientes con votación.\n\n` +
+    `- *🔍 /guia* - Muestra la guía básica para usuarios.\n` +
+    `- *💾 /save [nombre]* - Guarda la última lista verificada con un nombre personalizado.\n` +
+    `- *📜 /baul* - Muestra todas las listas guardadas del usuario.\n` +
+    `- *✅ /registro* - Lista las listas activas guardadas, ordenadas por fecha de caducidad.\n` +
+    `- *🎁 /generar* - Genera y verifica listas IPTV gratuitas de múltiples fuentes.\n` +
+    `- *📚 /listaspublicas* - Muestra las listas públicas más recientes con votación.\n\n` +
     `🔒 *Comandos de Administración* (solo aquí):\n` +
-    `- *📊 /historial*: Muestra el historial completo de verificaciones de todos los usuarios.\n` +
-    `- *🌟 /iptv*: Comando de bienvenida inicial (uso interno).\n\n` +
+    `- *📊 /historial* - Muestra el historial completo de verificaciones de todos los usuarios.\n` +
+    `- *🌟 /iptv* - Comando de bienvenida inicial (uso interno).\n\n` +
     `🔧 *Cómo funciona*:\n` +
     `- Envía un enlace IPTV o usa los botones para verificar.\n` +
     `- Usa /save después de verificar para guardar listas.\n` +
@@ -883,46 +924,46 @@ bot.onText(/\/generar/, async (msg) => {
   try {
     // Fuentes estáticas (repositorios públicos)
     const staticSources = [
-      { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España' },
-      { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/es.m3u', category: 'España' },
-      { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' },
-      { url: 'https://raw.githubusercontent.com/iptv-restream/iptv-channels/master/channels/es.m3u', category: 'España' },
-      { url: 'https://raw.githubusercontent.com/LaSaleta/tv/main/lista.m3u', category: 'España' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/movies.m3u', category: 'Películas' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/music.m3u', category: 'Música' },
-      { url: 'https://www.tdtchannels.com/lists/tv.m3u8', category: 'España (TDT)' },
-      { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General' },
-      { url: 'https://m3u.cl/lista.m3u', category: 'General' },
-      { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias' },
-      { url: 'https://iptv-org.github.io/iptv/categories/kids.m3u', category: 'Infantil' },
-      { url: 'https://iptv-org.github.io/iptv/categories/adult.m3u', category: 'Adultos' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/premium.m3u', category: 'Premium (si disponible)' },
-      { url: 'https://iptv-org.github.io/iptv/categories/premium.m3u', category: 'Premium (si disponible)' }
+      { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España', type: 'country' },
+      { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español', type: 'language' },
+      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/es.m3u', category: 'España', type: 'country' },
+      { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General', type: 'general' },
+      { url: 'https://raw.githubusercontent.com/iptv-restream/iptv-channels/master/channels/es.m3u', category: 'España', type: 'country' },
+      { url: 'https://raw.githubusercontent.com/LaSaleta/tv/main/lista.m3u', category: 'España', type: 'country' },
+      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México', type: 'country' },
+      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina', type: 'country' },
+      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA', type: 'country' },
+      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK', type: 'country' },
+      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes', type: 'sports' },
+      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/movies.m3u', category: 'Películas', type: 'movies' },
+      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/music.m3u', category: 'Música', type: 'music' },
+      { url: 'https://www.tdtchannels.com/lists/tv.m3u8', category: 'España (TDT)', type: 'tdt' },
+      { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General', type: 'iptvcat' },
+      { url: 'https://m3u.cl/lista.m3u', category: 'General', type: 'general' },
+      { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias', type: 'category' },
+      { url: 'https://iptv-org.github.io/iptv/categories/kids.m3u', category: 'Infantil', type: 'category' },
+      { url: 'https://iptv-org.github.io/iptv/categories/adult.m3u', category: 'Adultos', type: 'category' },
+      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/premium.m3u', category: 'Premium', type: 'premium' },
+      { url: 'https://iptv-org.github.io/iptv/categories/premium.m3u', category: 'Premium', type: 'premium' }
     ];
 
     // Fuentes dinámicas desde APIs públicas
     const dynamicSources = [];
 
-    // API de IPTVCat (ejemplo, requiere scraping o API si está disponible)
+    // API de IPTVCat
     try {
       const iptvCatResponse = await axiosInstance.get('https://iptvcat.com/spain/');
       const iptvCatLinks = iptvCatResponse.data.match(/(http[s]?:\/\/[^\s]+\.m3u)/g) || [];
-      dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)' })));
+      dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)', type: 'iptvcat' })));
     } catch (error) {
       logAction('iptvcat_error', { error: error.message });
     }
 
-    // API de TDTChannels (si tiene una API pública, aquí usamos su lista conocida)
+    // API de TDTChannels
     try {
       const tdtResponse = await axiosInstance.get('https://www.tdtchannels.com/lists/radio_and_tv.m3u8');
       if (tdtResponse.status === 200) {
-        dynamicSources.push({ url: 'https://www.tdtchannels.com/lists/radio_and_tv.m3u8', category: 'España (TDTChannels)' });
+        dynamicSources.push({ url: 'https://www.tdtchannels.com/lists/radio_and_tv.m3u8', category: 'España (TDTChannels)', type: 'tdt' });
       }
     } catch (error) {
       logAction('tdtchannels_error', { error: error.message });
@@ -934,15 +975,36 @@ bot.onText(/\/generar/, async (msg) => {
     const errors = [];
 
     for (const source of allSources) {
+      const loadingListMessage = await bot.sendMessage(chatId, `🔄 ${userMention}, procesando ${source.url} (${source.category})...${adminMessage}`, {
+        parse_mode: 'Markdown',
+        message_thread_id: allowedThreadId
+      });
+
+      await showListAnimation(chatId, allowedThreadId, loadingListMessage.message_id, `🔄 ${userMention}, procesando ${source.url} (${source.category})...`, source.type);
+
       try {
         const response = await axiosInstance.get(source.url, { timeout: 15000 });
         if (response.status === 200) {
-          lists.push({ url: source.url, type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U', category: source.category });
+          const result = await checkIPTVList(source.url, userId);
+          lists.push({ url: source.url, type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U', category: source.category, status: result.status, totalChannels: result.totalChannels, expiresAt: result.expiresAt });
           publicLists.push(source.url);
-          if (publicLists.length > 100) publicLists.shift(); // Limitar el tamaño de la lista
+          if (publicLists.length > 100) publicLists.shift();
+
+          await bot.editMessageText(`✅ ${userMention}, lista procesada: ${source.url} (${source.category})\n- Estado: ${result.status}\n- Canales: ${result.totalChannels || 'Desconocido'}\n- Expira: ${result.expiresAt || 'Desconocida'}${adminMessage}`, {
+            chat_id: chatId,
+            message_id: loadingListMessage.message_id,
+            message_thread_id: allowedThreadId,
+            parse_mode: 'Markdown'
+          });
         }
       } catch (error) {
         errors.push(`- ${source.url} (${source.category}): ${error.message}`);
+        await bot.editMessageText(`❌ ${userMention}, error al procesar ${source.url} (${source.category}): ${error.message}${adminMessage}`, {
+          chat_id: chatId,
+          message_id: loadingListMessage.message_id,
+          message_thread_id: allowedThreadId,
+          parse_mode: 'Markdown'
+        });
       }
     }
 
@@ -960,16 +1022,15 @@ bot.onText(/\/generar/, async (msg) => {
 
     // Guardar listas en Supabase
     for (const list of lists) {
-      const result = await checkIPTVList(list.url, userId);
       await supabase
         .from('public_lists')
         .insert({
           url: list.url,
           type: list.type,
           category: list.category,
-          status: result.status,
-          total_channels: result.totalChannels || 0,
-          expires_at: result.expiresAt || 'Desconocida',
+          status: list.status,
+          total_channels: list.totalChannels || 0,
+          expires_at: list.expiresAt || 'Desconocida',
           last_checked: new Date().toISOString()
         });
     }
@@ -981,29 +1042,18 @@ bot.onText(/\/generar/, async (msg) => {
       const events = await getSportsEvents();
       if (events.length > 0) {
         sportsMessage = `\n\n⚽ *Eventos deportivos de hoy*:\n`;
-        for (const event of events.slice(0, 3)) { // Mostrar hasta 3 eventos
+        for (const event of events.slice(0, 3)) {
           sportsMessage += `- ${event.strEvent} (${event.dateEvent} ${event.strTime})\n` +
                            `  📺 Disponible en listas de deportes: [Ver listas](#deportes)\n`;
         }
       }
     }
 
-    let responseText = `🎉 ${userMention}, aquí tienes las listas IPTV más recientes:\n\n`;
-    for (const list of lists) {
-      const result = await checkIPTVList(list.url, userId);
-      responseText += `- *${list.type} (${list.category})*: [${escapeMarkdown(list.url)}](${list.url})\n` +
-                      `  - Estado: ${result.status}\n` +
-                      `  - Canales: ${result.totalChannels || 'Desconocido'}\n` +
-                      `  - Expira: ${result.expiresAt || 'Desconocida'}\n`;
-
-      if (!userHistory[userId]) userHistory[userId] = [];
-      userHistory[userId].push({ url: list.url, result, timestamp: new Date() });
-      if (userHistory[userId].length > 50) userHistory[userId].shift();
-    }
-    responseText += `\n💡 Usa /save [nombre] para guardar una lista.\n` +
-                    `📚 Usa /listaspublicas para ver todas las listas públicas con votación.\n` +
-                    sportsMessage +
-                    adminMessage;
+    let responseText = `🎉 ${userMention}, generación de listas completada:\n\n` +
+                      `💡 Usa /save [nombre] para guardar una lista.\n` +
+                      `📚 Usa /listaspublicas para ver todas las listas públicas con votación.\n` +
+                      sportsMessage +
+                      adminMessage;
 
     await bot.editMessageText(responseText, {
       chat_id: chatId,
@@ -1054,11 +1104,11 @@ bot.onText(/\/listaspublicas/, async (msg) => {
     const upvotes = votes.filter(v => v.vote_type === 'upvote').length;
     const downvotes = votes.filter(v => v.vote_type === 'downvote').length;
 
-    responseText += `- *${list.type} (${list.category})*: [${escapeMarkdown(list.url)}](${list.url})\n` +
-                    `  - Estado: ${list.status}\n` +
-                    `  - Canales: ${list.total_channels || 'Desconocido'}\n` +
-                    `  - Expira: ${list.expires_at || 'Desconocida'}\n` +
-                    `  - 👍 Me gusta: ${upvotes} | 👎 No funciona: ${downvotes}\n\n`;
+    responseText = `- *${list.type} (${list.category})*: [${escapeMarkdown(list.url)}](${list.url})\n` +
+                  `  - Estado: ${list.status}\n` +
+                  `  - Canales: ${list.total_channels || 'Desconocido'}\n` +
+                  `  - Expira: ${list.expires_at || 'Desconocida'}\n` +
+                  `  - 👍 Me gusta: ${upvotes} | 👎 No funciona: ${downvotes}\n\n`;
 
     await bot.sendMessage(chatId, responseText, {
       parse_mode: 'Markdown',
@@ -1173,42 +1223,42 @@ cron.schedule('0 12 * * *', async () => {
   });
 
   const staticSources = [
-    { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España' },
-    { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/es.m3u', category: 'España' },
-    { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' },
-    { url: 'https://raw.githubusercontent.com/iptv-restream/iptv-channels/master/channels/es.m3u', category: 'España' },
-    { url: 'https://raw.githubusercontent.com/LaSaleta/tv/main/lista.m3u', category: 'España' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/movies.m3u', category: 'Películas' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/music.m3u', category: 'Música' },
-    { url: 'https://www.tdtchannels.com/lists/tv.m3u8', category: 'España (TDT)' },
-    { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General' },
-    { url: 'https://m3u.cl/lista.m3u', category: 'General' },
-    { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias' },
-    { url: 'https://iptv-org.github.io/iptv/categories/kids.m3u', category: 'Infantil' },
-    { url: 'https://iptv-org.github.io/iptv/categories/adult.m3u', category: 'Adultos' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/premium.m3u', category: 'Premium (si disponible)' },
-    { url: 'https://iptv-org.github.io/iptv/categories/premium.m3u', category: 'Premium (si disponible)' }
+    { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España', type: 'country' },
+    { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español', type: 'language' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/es.m3u', category: 'España', type: 'country' },
+    { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General', type: 'general' },
+    { url: 'https://raw.githubusercontent.com/iptv-restream/iptv-channels/master/channels/es.m3u', category: 'España', type: 'country' },
+    { url: 'https://raw.githubusercontent.com/LaSaleta/tv/main/lista.m3u', category: 'España', type: 'country' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México', type: 'country' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina', type: 'country' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA', type: 'country' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK', type: 'country' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes', type: 'sports' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/movies.m3u', category: 'Películas', type: 'movies' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/music.m3u', category: 'Música', type: 'music' },
+    { url: 'https://www.tdtchannels.com/lists/tv.m3u8', category: 'España (TDT)', type: 'tdt' },
+    { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General', type: 'iptvcat' },
+    { url: 'https://m3u.cl/lista.m3u', category: 'General', type: 'general' },
+    { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias', type: 'category' },
+    { url: 'https://iptv-org.github.io/iptv/categories/kids.m3u', category: 'Infantil', type: 'category' },
+    { url: 'https://iptv-org.github.io/iptv/categories/adult.m3u', category: 'Adultos', type: 'category' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/premium.m3u', category: 'Premium', type: 'premium' },
+    { url: 'https://iptv-org.github.io/iptv/categories/premium.m3u', category: 'Premium', type: 'premium' }
   ];
 
   const dynamicSources = [];
   try {
     const iptvCatResponse = await axiosInstance.get('https://iptvcat.com/spain/');
     const iptvCatLinks = iptvCatResponse.data.match(/(http[s]?:\/\/[^\s]+\.m3u)/g) || [];
-    dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)' })));
+    dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)', type: 'iptvcat' })));
   } catch (error) {
     logAction('iptvcat_error', { error: error.message });
   }
 
   try {
-    const tdtResponse = await axiosInstance.get('https://www.tdtchannels.com/lists/radio_and_tv.m3u8');
+    const tdtResponse = await axiosInstance.get('https://www.tdtchannels.com/lists/tv.m3u8');
     if (tdtResponse.status === 200) {
-      dynamicSources.push({ url: 'https://www.tdtchannels.com/lists/radio_and_tv.m3u8', category: 'España (TDTChannels)' });
+      dynamicSources.push({ url: 'https://www.tdtchannels.com/lists/tv.m3u8', category: 'España (TDTChannels)', type: 'tdt' });
     }
   } catch (error) {
     logAction('tdtchannels_error', { error: error.message });
@@ -1221,7 +1271,8 @@ cron.schedule('0 12 * * *', async () => {
     try {
       const response = await axiosInstance.get(source.url, { timeout: 15000 });
       if (response.status === 200) {
-        lists.push({ url: source.url, type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U', category: source.category });
+        const result = await checkIPTVList(source.url, 'cron');
+        lists.push({ url: source.url, type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U', category: source.category, status: result.status, totalChannels: result.totalChannels, expiresAt: result.expiresAt });
         publicLists.push(source.url);
         if (publicLists.length > 100) publicLists.shift();
       }
@@ -1231,16 +1282,15 @@ cron.schedule('0 12 * * *', async () => {
   }
 
   for (const list of lists) {
-    const result = await checkIPTVList(list.url, 'cron');
     await supabase
       .from('public_lists')
       .insert({
         url: list.url,
         type: list.type,
         category: list.category,
-        status: result.status,
-        total_channels: result.totalChannels || 0,
-        expires_at: result.expiresAt || 'Desconocida',
+        status: list.status,
+        total_channels: list.totalChannels || 0,
+        expires_at: list.expiresAt || 'Desconocida',
         last_checked: new Date().toISOString()
       });
   }
