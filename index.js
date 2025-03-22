@@ -132,9 +132,7 @@ function ensurePort(url) {
 
 // Validar formato de enlace IPTV
 function isValidIPTVFormat(url) {
-  return url.includes('get.php') || // Xtream
-         url.endsWith('.m3u') || url.endsWith('.m3u8') || // M3U/M3U8
-         url.endsWith('.ts') || url.includes('hls'); // TS/HLS
+  return url.includes('get.php') || url.endsWith('.m3u') || url.endsWith('.m3u8') || url.endsWith('.ts') || url.includes('hls');
 }
 
 // Verificar lista IPTV
@@ -142,7 +140,7 @@ async function checkIPTVList(url, userId) {
   logAction('check_start', { url });
   try {
     url = ensurePort(url.trim());
-    const timeout = userConfigs[userId]?.timeout || 3000;
+    const timeout = userConfigs[userId]?.timeout || 10000; // Aumentado a 10 segundos
 
     if (url.includes('get.php')) {
       const [, params] = url.split('?');
@@ -224,7 +222,9 @@ async function checkIPTVList(url, userId) {
 
     throw new Error('Formato no soportado');
   } catch (error) {
-    const errorMsg = error.response?.status === 404 ? 'Servidor no encontrado (404)' : error.message.includes('timeout') ? 'Tiempo agotado' : 'Error al verificar';
+    const errorMsg = error.response?.status === 404 ? 'Servidor no encontrado (404)' : 
+                     error.message.includes('timeout') ? 'Tiempo agotado' : 
+                     `Error al verificar: ${error.message}`;
     logAction('check_error', { url, error: errorMsg });
     return { type: 'Desconocido', status: 'Error', error: errorMsg, server: url.split('/').slice(0, 3).join('/') };
   }
@@ -243,9 +243,7 @@ function formatResponse(msg, result, originalUrl) {
     ? `${escapeMarkdown(result.username)}:${escapeMarkdown(result.password)}` 
     : 'No disponible';
 
-  const serverReal = result.type === 'Xtream Codes' 
-    ? result.server 
-    : result.server;
+  const serverReal = result.type === 'Xtream Codes' ? result.server : result.server;
 
   let serverRealLink = serverReal;
   try {
@@ -264,7 +262,7 @@ function formatResponse(msg, result, originalUrl) {
     `🔗 *Conexiones*: ${result.activeConnections !== undefined ? `${result.activeConnections}/${result.maxConnections}` : 'No disponible'}\n` +
     `📺 *Canales*: ${result.totalChannels || 0}\n` +
     `🌐 *Servidor Real*: [${escapeMarkdown(serverReal)}](${serverRealLink})\n` +
-    `⏲ *Zona horaria*: ${result.timezone || 'No disponible'}\n\n` +
+    `⏲ *Zona horaria*: ${result.timezone || 'Desconocida'}\n\n` +
     `🚀 *${botName} - Verificación Profesional y Gratuita*${adminMessage}`;
 
   return { text: response };
@@ -444,7 +442,7 @@ bot.onText(/\/menu/, async (msg) => {
 bot.onText(/\/timeout (\d+)/, async (msg, match) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
-  const timeout = parseInt(match[1]) * 1000; // Convertir a milisegundos
+  const timeout = parseInt(match[1]) * 1000;
   if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
   userConfigs[userId] = { timeout };
   await bot.sendMessage(chatId, `⏳ Timeout ajustado a ${match[1]} segundos para ${getUserMention(msg.from)}.${adminMessage}`, {
@@ -556,10 +554,12 @@ bot.onText(/\/lista/, async (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
   const allowedThreadId = getAllowedThreadId(chatId);
+  const userMention = getUserMention(msg.from);
+
   if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
 
   if (!userFavorites[userId] || !Object.keys(userFavorites[userId]).length) {
-    await bot.sendMessage(chatId, `📋 ${getUserMention(msg.from)}, no tienes listas guardadas para mostrar.${adminMessage}`, {
+    await bot.sendMessage(chatId, `📋 ${userMention}, no tienes listas guardadas para mostrar.${adminMessage}`, {
       parse_mode: 'Markdown',
       message_thread_id: allowedThreadId
     });
@@ -580,7 +580,7 @@ bot.onText(/\/lista/, async (msg) => {
   }
 
   if (activeLists.length === 0) {
-    await bot.sendMessage(chatId, `📋 ${getUserMention(msg.from)}, no tienes listas activas guardadas.${adminMessage}`, {
+    await bot.sendMessage(chatId, `📋 ${userMention}, no tienes listas activas guardadas.${adminMessage}`, {
       parse_mode: 'Markdown',
       message_thread_id: allowedThreadId
     });
@@ -589,13 +589,13 @@ bot.onText(/\/lista/, async (msg) => {
 
   activeLists.sort((a, b) => b.expiresTimestamp - a.expiresTimestamp);
 
-  let listText = `📋 Listas activas de ${getUserMention(msg.from)} (ordenadas por caducidad):\n`;
+  let listText = `📋 Listas activas de ${userMention} (ordenadas por caducidad):\n`;
   activeLists.forEach(list => {
     listText += `- *${list.name}*: [${escapeMarkdown(list.url)}](${list.url}) - Expira: ${list.expiresAt}\n`;
   });
   listText += adminMessage;
 
-  await bot.sendMessage(chatId, listText, {
+  await bot.sendMessage(chatId, listText, { // Solo un mensaje
     parse_mode: 'Markdown',
     message_thread_id: allowedThreadId
   });
@@ -615,21 +615,39 @@ bot.onText(/\/generar/, async (msg) => {
   });
 
   try {
+    // Fuentes IPTV abiertas y recientes (M3U y M3U8 preferentemente)
     const sources = [
-      'https://iptv-org.github.io/iptv/countries/es.m3u',
-      'https://www.tdtchannels.com/lists/tv.m3u8'
+      'https://iptv-org.github.io/iptv/countries/es.m3u', // IPTV-org España
+      'https://www.tdtchannels.com/lists/tv.m3u8', // TDT Channels España
+      'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', // Free-TV GitHub
+      'https://raw.githubusercontent.com/chadisid/IPTV-Spain/main/IPTV_Spain.m3u', // IPTV-Spain GitHub
+      'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', // IPTV Cat reciente
+      'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/es.m3u', // IPTV-org streams España
+      'https://iptv-org.github.io/iptv/languages/spa.m3u', // Canales en español
+      'https://raw.githubusercontent.com/iptv-restream/iptv-channels/master/channels/es.m3u', // IPTV Restream
+      'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', // Otra lista reciente IPTV Cat
+      'https://raw.githubusercontent.com/LaSaleta/tv/main/lista.m3u' // LaSaleta GitHub
     ];
 
     const lists = [];
+    const errors = [];
+
     for (const source of sources) {
-      const response = await axios.get(source, { timeout: 5000 });
-      if (response.status === 200) {
-        lists.push({ url: source, type: source.endsWith('.m3u8') ? 'M3U8' : 'M3U' });
+      try {
+        const response = await axios.get(source, { timeout: 10000 });
+        if (response.status === 200) {
+          const type = source.endsWith('.m3u8') ? 'M3U8' : 'M3U';
+          lists.push({ url: source, type });
+        }
+      } catch (error) {
+        errors.push(`- ${source}: ${error.message}`);
       }
     }
 
     if (lists.length === 0) {
-      await bot.editMessageText(`❌ ${userMention}, no se encontraron listas gratuitas confiables en este momento.${adminMessage}`, {
+      const errorText = `❌ ${userMention}, no se encontraron listas gratuitas confiables en este momento.\n\n` +
+                        `*Errores encontrados*:\n${errors.join('\n')}${adminMessage}`;
+      await bot.editMessageText(errorText, {
         chat_id: chatId,
         message_id: loadingMessage.message_id,
         message_thread_id: allowedThreadId,
