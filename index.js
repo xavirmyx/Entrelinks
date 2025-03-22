@@ -136,7 +136,7 @@ function getAllowedThreadId(chatId) {
 function ensurePort(url) {
   if (!url.startsWith('http')) url = `http://${url}`;
   const urlObj = new URL(url);
-  if (!urlObj.port) urlObj.port = '80';
+  if (!urlObj.port) urlObj.port = urlObj.protocol === 'https:' ? '443' : '80';
   return urlObj.toString();
 }
 
@@ -145,12 +145,20 @@ function isValidIPTVFormat(url) {
   return url.includes('get.php') || url.endsWith('.m3u') || url.endsWith('.m3u8') || url.endsWith('.ts') || url.includes('hls');
 }
 
+// Configuración de axios para ignorar errores de SSL
+const axiosInstance = axios.create({
+  timeout: 15000, // Aumentado a 15 segundos
+  httpsAgent: new (require('https').Agent)({
+    rejectUnauthorized: false // Ignorar errores de certificado (inseguro, pero necesario para algunos servidores IPTV)
+  })
+});
+
 // Verificar lista IPTV
 async function checkIPTVList(url, userId) {
   logAction('check_start', { url });
   try {
     url = ensurePort(url.trim());
-    const timeout = userConfigs[userId]?.timeout || 10000;
+    const timeout = userConfigs[userId]?.timeout || 15000;
 
     if (url.includes('get.php')) {
       const [, params] = url.split('?');
@@ -159,9 +167,9 @@ async function checkIPTVList(url, userId) {
       const server = url.split('/get.php')[0];
       const apiUrl = `${server}/player_api.php?username=${username}&password=${password}`;
 
-      const response = await axios.get(apiUrl, { timeout });
+      const response = await axiosInstance.get(apiUrl, { timeout });
       const { user_info, server_info } = response.data;
-      const streams = await axios.get(`${apiUrl}&action=get_live_streams`, { timeout });
+      const streams = await axiosInstance.get(`${apiUrl}&action=get_live_streams`, { timeout });
 
       logAction('check_xtream_success', { url, channels: streams.data.length });
       return {
@@ -180,7 +188,7 @@ async function checkIPTVList(url, userId) {
     }
 
     if (url.endsWith('.m3u') || url.endsWith('.m3u8')) {
-      const response = await axios.get(url, { timeout });
+      const response = await axiosInstance.get(url, { timeout });
       const lines = response.data.split('\n');
       const channels = [];
       let currentChannel = null;
@@ -202,7 +210,7 @@ async function checkIPTVList(url, userId) {
       const channelStatuses = await Promise.all(
         sampleChannels.map(async channel => {
           try {
-            const headResponse = await axios.head(channel.url, { timeout });
+            const headResponse = await axiosInstance.head(channel.url, { timeout });
             return headResponse.status === 200;
           } catch {
             return false;
@@ -220,7 +228,7 @@ async function checkIPTVList(url, userId) {
     }
 
     if (url.endsWith('.ts') || url.includes('hls')) {
-      const response = await axios.head(url, { timeout });
+      const response = await axiosInstance.head(url, { timeout });
       logAction('check_direct_success', { url });
       return {
         type: 'Enlace Directo',
@@ -232,9 +240,22 @@ async function checkIPTVList(url, userId) {
 
     throw new Error('Formato no soportado');
   } catch (error) {
-    const errorMsg = error.response?.status === 404 ? 'Servidor no encontrado (404)' : 
-                     error.message.includes('timeout') ? 'Tiempo agotado' : 
-                     `Error al verificar: ${error.message}`;
+    let errorMsg;
+    if (error.response) {
+      if (error.response.status === 403) {
+        errorMsg = 'Acceso denegado (403): El servidor rechazó la solicitud, puede estar protegido.';
+      } else if (error.response.status === 404) {
+        errorMsg = 'No encontrado (404): El enlace no está disponible.';
+      } else {
+        errorMsg = `Error del servidor (${error.response.status}): ${error.response.statusText}`;
+      }
+    } else if (error.message.includes('timeout')) {
+      errorMsg = 'Tiempo agotado: El servidor no respondió a tiempo.';
+    } else if (error.message.includes('EPROTO')) {
+      errorMsg = 'Error de conexión SSL: Problema con el certificado del servidor.';
+    } else {
+      errorMsg = `Error al verificar: ${error.message}`;
+    }
     logAction('check_error', { url, error: errorMsg });
     return { type: 'Desconocido', status: 'Error', error: errorMsg, server: url.split('/').slice(0, 3).join('/') };
   }
@@ -398,7 +419,7 @@ bot.onText(/\/guia/, async (msg) => {
     `- *📜 /list*: Lista todas tus listas guardadas.\n` +
     `- *✅ /lista*: Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
     `- *🎁 /generar*: Obtiene listas IPTV gratuitas de España verificadas.\n` +
-    `- *🪞 /espejo [URL]*: Crea un espejo de una lista M3U con enlaces activos y lo sube a Pastebin.\n\n` +
+    `- *🪞 /espejo [URL]*: Crea un espejo de una lista—M3U con enlaces activos y lo sube a Pastebin.\n\n` +
     `🔧 *Cómo usar el bot*:\n` +
     `1️⃣ Usa los botones o envía un enlace IPTV válido.\n` +
     `2️⃣ Recibe un informe detallado al instante.\n\n` +
@@ -645,7 +666,7 @@ bot.onText(/\/generar/, async (msg) => {
 
     for (const source of sources) {
       try {
-        const response = await axios.get(source, { timeout: 10000 });
+        const response = await axiosInstance.get(source, { timeout: 15000 });
         if (response.status === 200) {
           const type = source.endsWith('.m3u8') ? 'M3U8' : 'M3U';
           lists.push({ url: source, type });
@@ -706,7 +727,8 @@ bot.onText(/\/espejo (.+)/, async (msg, match) => {
 
   if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
 
-  if (!isValidIPTVFormat(url) || (!url.endsWith('.m3u') && !url.endsWith('.m3u8'))) {
+  // Validar que la URL sea M3U/M3U8
+  if (!url.endsWith('.m3u') && !url.endsWith('.m3u8')) {
     await bot.sendMessage(chatId, `❌ ${userMention}, por favor envía una URL válida de una lista M3U/M3U8 (ejemplo: http://example.com/list.m3u).${adminMessage}`, {
       parse_mode: 'Markdown',
       message_thread_id: allowedThreadId
@@ -721,7 +743,7 @@ bot.onText(/\/espejo (.+)/, async (msg, match) => {
 
   try {
     // Descargar la lista original
-    const response = await axios.get(url, { timeout: 10000 });
+    const response = await axiosInstance.get(url, { timeout: 15000 });
     const lines = response.data.split('\n');
     const channels = [];
     let currentChannel = null;
@@ -738,12 +760,15 @@ bot.onText(/\/espejo (.+)/, async (msg, match) => {
       }
     }
 
-    // Verificar enlaces activos
+    // Verificar enlaces activos (máximo 50 canales para evitar sobrecarga)
+    const maxChannelsToCheck = 50;
+    const channelsToCheck = channels.slice(0, maxChannelsToCheck);
     const activeChannels = [];
-    const timeout = userConfigs[userId]?.timeout || 10000;
-    for (const channel of channels) {
+    const timeout = userConfigs[userId]?.timeout || 15000;
+
+    for (const channel of channelsToCheck) {
       try {
-        const headResponse = await axios.head(channel.url, { timeout });
+        const headResponse = await axiosInstance.head(channel.url, { timeout });
         if (headResponse.status === 200) {
           activeChannels.push(channel);
         }
@@ -753,7 +778,13 @@ bot.onText(/\/espejo (.+)/, async (msg, match) => {
     }
 
     if (activeChannels.length === 0) {
-      await bot.editMessageText(`❌ ${userMention}, no se encontraron canales activos en la lista.${adminMessage}`, {
+      const errorMessage = `❌ ${userMention}, no se encontraron canales activos en la lista.\n\n` +
+                           `💡 *Posibles razones*:\n` +
+                           `- Los enlaces pueden haber caducado.\n` +
+                           `- El servidor puede estar bloqueando las solicitudes (error 403).\n` +
+                           `- Problemas de conexión o certificados SSL.\n` +
+                           `🔧 Intenta con otra lista M3U/M3U8.${adminMessage}`;
+      await bot.editMessageText(errorMessage, {
         chat_id: chatId,
         message_id: loadingMessage.message_id,
         message_thread_id: allowedThreadId,
