@@ -38,6 +38,7 @@ let userHistory = {};
 let userStates = {};
 let userConfigs = {};
 let userFavorites = {};
+let processedUpdates = new Set(); // Para evitar procesar actualizaciones duplicadas
 
 // Mensaje fijo
 const adminMessage = '\n\n👨‍💼 *Equipo de Administración EntresHijos*';
@@ -90,6 +91,15 @@ async function showLoadingAnimation(chatId, threadId, messageId, baseText) {
 
 // Ruta webhook (para Render)
 app.post(`/bot${token}`, (req, res) => {
+  const updateId = req.body.update_id;
+  if (processedUpdates.has(updateId)) {
+    res.sendStatus(200);
+    return;
+  }
+  processedUpdates.add(updateId);
+  if (processedUpdates.size > 1000) {
+    processedUpdates.clear(); // Limpiar para evitar crecimiento infinito
+  }
   logAction('webhook_received', { update: req.body });
   bot.processUpdate(req.body);
   res.sendStatus(200);
@@ -147,9 +157,9 @@ function isValidIPTVFormat(url) {
 
 // Configuración de axios para ignorar errores de SSL
 const axiosInstance = axios.create({
-  timeout: 15000, // Aumentado a 15 segundos
+  timeout: 15000,
   httpsAgent: new (require('https').Agent)({
-    rejectUnauthorized: false // Ignorar errores de certificado (inseguro, pero necesario para algunos servidores IPTV)
+    rejectUnauthorized: false
   })
 });
 
@@ -419,7 +429,7 @@ bot.onText(/\/guia/, async (msg) => {
     `- *📜 /list*: Lista todas tus listas guardadas.\n` +
     `- *✅ /lista*: Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
     `- *🎁 /generar*: Obtiene listas IPTV gratuitas de España verificadas.\n` +
-    `- *🪞 /espejo [URL]*: Crea un espejo de una lista—M3U con enlaces activos y lo sube a Pastebin.\n\n` +
+    `- *🪞 /espejo [URL]*: Crea un espejo de una lista M3U con enlaces activos y lo sube a Pastebin.\n\n` +
     `🔧 *Cómo usar el bot*:\n` +
     `1️⃣ Usa los botones o envía un enlace IPTV válido.\n` +
     `2️⃣ Recibe un informe detallado al instante.\n\n` +
@@ -653,12 +663,8 @@ bot.onText(/\/generar/, async (msg) => {
       'https://iptv-org.github.io/iptv/countries/es.m3u',
       'https://www.tdtchannels.com/lists/tv.m3u8',
       'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8',
-      'https://raw.githubusercontent.com/chadisid/IPTV-Spain/main/IPTV_Spain.m3u',
-      'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u',
       'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/es.m3u',
-      'https://iptv-org.github.io/iptv/languages/spa.m3u',
-      'https://raw.githubusercontent.com/iptv-restream/iptv-channels/master/channels/es.m3u',
-      'https://raw.githubusercontent.com/LaSaleta/tv/main/lista.m3u'
+      'https://iptv-org.github.io/iptv/languages/spa.m3u'
     ];
 
     const lists = [];
@@ -799,11 +805,11 @@ bot.onText(/\/espejo (.+)/, async (msg, match) => {
       newM3U += `${channel.extinf}\n${channel.url}\n`;
     });
 
-    // Subir a Pastebin
+    // Subir a Pastebin (usar formato 'text' en lugar de 'm3u')
     const pasteUrl = await pastebin.createPaste({
       text: newM3U,
       title: `Espejo IPTV - ${userMention} - ${new Date().toLocaleDateString('es-ES')}`,
-      format: 'm3u',
+      format: 'text', // Cambiado a 'text' porque 'm3u' no es soportado
       privacy: 1 // 1 = Público no listado
     });
 
@@ -834,7 +840,7 @@ bot.onText(/\/espejo (.+)/, async (msg, match) => {
   }
 });
 
-// Procesar URLs IPTV
+// Procesar URLs IPTV (solo si no es un comando)
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
@@ -846,6 +852,9 @@ bot.on('message', async (msg) => {
   if (!isAllowedContext(chatId, threadId)) return;
 
   if (!userStates[userId]) userStates[userId] = {};
+
+  // Ignorar mensajes que sean comandos
+  if (text.startsWith('/')) return;
 
   const urlMatch = text.match(/(http|https):\/\/[^\s]+/);
   if ((userStates[userId].action === 'check' || !userStates[userId].action) && urlMatch) {
