@@ -2,12 +2,22 @@ const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const cron = require('node-cron');
 const axios = require('axios');
-const cheerio = require('cheerio');
+const PastebinAPI = require('pastebin-js');
 
 // Token del bot y nombre
 const token = '7861676131:AAFLv4dBIFiHV1OYc8BJH2U8kWPal7lpBMQ';
 const bot = new TelegramBot(token);
 const botName = 'EntreCheck_iptv';
+
+// Claves de Pastebin
+const PASTEBIN_API_KEY = 'MrabyxYzAzEhoWXm6zftoXHAMe5GpKzs'; // Tu API Developer Key
+const PASTEBIN_USER_KEY = 'accf385ed056676f749c68af7a588ea8'; // Tu api_user_key
+
+// Inicializar Pastebin
+const pastebin = new PastebinAPI({
+  api_dev_key: PASTEBIN_API_KEY,
+  api_user_key: PASTEBIN_USER_KEY
+});
 
 // Configuración de Express
 const app = express();
@@ -140,7 +150,7 @@ async function checkIPTVList(url, userId) {
   logAction('check_start', { url });
   try {
     url = ensurePort(url.trim());
-    const timeout = userConfigs[userId]?.timeout || 10000; // Aumentado a 10 segundos
+    const timeout = userConfigs[userId]?.timeout || 10000;
 
     if (url.includes('get.php')) {
       const [, params] = url.split('?');
@@ -313,7 +323,8 @@ bot.on('callback_query', async (query) => {
         `- *💾 /save [nombre]*: Guarda la última lista verificada con un nombre.\n` +
         `- *📜 /list*: Lista todas tus listas guardadas.\n` +
         `- *✅ /lista*: Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
-        `- *🎁 /generar*: Obtiene listas IPTV gratuitas de España verificadas.\n\n` +
+        `- *🎁 /generar*: Obtiene listas IPTV gratuitas de España verificadas.\n` +
+        `- *🪞 /espejo [URL]*: Crea un espejo de una lista M3U con enlaces activos y lo sube a Pastebin.\n\n` +
         `🔧 *Cómo usar el bot*:\n` +
         `1️⃣ Usa los botones o envía un enlace IPTV válido.\n` +
         `2️⃣ Recibe un informe detallado al instante.\n\n` +
@@ -321,7 +332,7 @@ bot.on('callback_query', async (query) => {
         `- *Xtream*: \`http://server.com:80/get.php?username=xxx&password=yyy\`\n` +
         `- *M3U/M3U8*: \`http://server.com:80/playlist.m3u\`\n` +
         `- *TS/HLS*: \`http://server.com:80/stream.ts\`\n\n` +
-        `💡 *Tip*: Usa /generar para probar listas gratuitas y /save para guardar tus favoritas.\n\n` +
+        `💡 *Tip*: Usa /espejo para obtener una lista limpia de canales activos.\n\n` +
         `🚀 *${botName} - Tu aliado en IPTV*${adminMessage}`;
 
       await bot.sendMessage(chatId, helpMessage, {
@@ -386,7 +397,8 @@ bot.onText(/\/guia/, async (msg) => {
     `- *💾 /save [nombre]*: Guarda la última lista verificada con un nombre.\n` +
     `- *📜 /list*: Lista todas tus listas guardadas.\n` +
     `- *✅ /lista*: Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
-    `- *🎁 /generar*: Obtiene listas IPTV gratuitas de España verificadas.\n\n` +
+    `- *🎁 /generar*: Obtiene listas IPTV gratuitas de España verificadas.\n` +
+    `- *🪞 /espejo [URL]*: Crea un espejo de una lista M3U con enlaces activos y lo sube a Pastebin.\n\n` +
     `🔧 *Cómo usar el bot*:\n` +
     `1️⃣ Usa los botones o envía un enlace IPTV válido.\n` +
     `2️⃣ Recibe un informe detallado al instante.\n\n` +
@@ -394,7 +406,7 @@ bot.onText(/\/guia/, async (msg) => {
     `- *Xtream*: \`http://server.com:80/get.php?username=xxx&password=yyy\`\n` +
     `- *M3U/M3U8*: \`http://server.com:80/playlist.m3u\`\n` +
     `- *TS/HLS*: \`http://server.com:80/stream.ts\`\n\n` +
-    `💡 *Tip*: Usa /generar para probar listas gratuitas y /save para guardar tus favoritas.\n\n` +
+    `💡 *Tip*: Usa /espejo para obtener una lista limpia de canales activos.\n\n` +
     `🚀 *${botName} - Tu aliado en IPTV*${adminMessage}`;
 
   await bot.sendMessage(chatId, helpMessage, {
@@ -421,7 +433,8 @@ bot.onText(/\/menu/, async (msg) => {
     `- *💾 /save [nombre]*: Guarda la última lista verificada con un nombre personalizado.\n` +
     `- *📜 /list*: Muestra todas las listas guardadas del usuario.\n` +
     `- *✅ /lista*: Lista las listas activas guardadas, ordenadas por fecha de caducidad.\n` +
-    `- *🎁 /generar*: Genera y verifica listas IPTV gratuitas de España.\n\n` +
+    `- *🎁 /generar*: Genera y verifica listas IPTV gratuitas de España.\n` +
+    `- *🪞 /espejo [URL]*: Crea un espejo de una lista M3U con enlaces activos y lo sube a Pastebin.\n\n` +
     `🔒 *Comandos de Administración* (solo aquí):\n` +
     `- *📊 /historial*: Muestra el historial completo de verificaciones de todos los usuarios.\n` +
     `- *🌟 /iptv*: Comando de bienvenida inicial (uso interno).\n\n` +
@@ -595,7 +608,7 @@ bot.onText(/\/lista/, async (msg) => {
   });
   listText += adminMessage;
 
-  await bot.sendMessage(chatId, listText, { // Solo un mensaje
+  await bot.sendMessage(chatId, listText, {
     parse_mode: 'Markdown',
     message_thread_id: allowedThreadId
   });
@@ -615,18 +628,16 @@ bot.onText(/\/generar/, async (msg) => {
   });
 
   try {
-    // Fuentes IPTV abiertas y recientes (M3U y M3U8 preferentemente)
     const sources = [
-      'https://iptv-org.github.io/iptv/countries/es.m3u', // IPTV-org España
-      'https://www.tdtchannels.com/lists/tv.m3u8', // TDT Channels España
-      'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', // Free-TV GitHub
-      'https://raw.githubusercontent.com/chadisid/IPTV-Spain/main/IPTV_Spain.m3u', // IPTV-Spain GitHub
-      'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', // IPTV Cat reciente
-      'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/es.m3u', // IPTV-org streams España
-      'https://iptv-org.github.io/iptv/languages/spa.m3u', // Canales en español
-      'https://raw.githubusercontent.com/iptv-restream/iptv-channels/master/channels/es.m3u', // IPTV Restream
-      'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', // Otra lista reciente IPTV Cat
-      'https://raw.githubusercontent.com/LaSaleta/tv/main/lista.m3u' // LaSaleta GitHub
+      'https://iptv-org.github.io/iptv/countries/es.m3u',
+      'https://www.tdtchannels.com/lists/tv.m3u8',
+      'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8',
+      'https://raw.githubusercontent.com/chadisid/IPTV-Spain/main/IPTV_Spain.m3u',
+      'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u',
+      'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/es.m3u',
+      'https://iptv-org.github.io/iptv/languages/spa.m3u',
+      'https://raw.githubusercontent.com/iptv-restream/iptv-channels/master/channels/es.m3u',
+      'https://raw.githubusercontent.com/LaSaleta/tv/main/lista.m3u'
     ];
 
     const lists = [];
@@ -677,6 +688,113 @@ bot.onText(/\/generar/, async (msg) => {
   } catch (error) {
     logAction('generate_error', { error: error.message });
     await bot.editMessageText(`❌ ${userMention}, error al generar listas: ${error.message}${adminMessage}`, {
+      chat_id: chatId,
+      message_id: loadingMessage.message_id,
+      message_thread_id: allowedThreadId,
+      parse_mode: 'Markdown'
+    });
+  }
+});
+
+// Comando /espejo (crear espejo en Pastebin)
+bot.onText(/\/espejo (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const allowedThreadId = getAllowedThreadId(chatId);
+  const userMention = getUserMention(msg.from);
+  const url = match[1];
+
+  if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
+
+  if (!isValidIPTVFormat(url) || (!url.endsWith('.m3u') && !url.endsWith('.m3u8'))) {
+    await bot.sendMessage(chatId, `❌ ${userMention}, por favor envía una URL válida de una lista M3U/M3U8 (ejemplo: http://example.com/list.m3u).${adminMessage}`, {
+      parse_mode: 'Markdown',
+      message_thread_id: allowedThreadId
+    });
+    return;
+  }
+
+  const loadingMessage = await bot.sendMessage(chatId, `🪞 ${userMention}, creando espejo de ${escapeMarkdown(url)}...${adminMessage}`, {
+    parse_mode: 'Markdown',
+    message_thread_id: allowedThreadId
+  });
+
+  try {
+    // Descargar la lista original
+    const response = await axios.get(url, { timeout: 10000 });
+    const lines = response.data.split('\n');
+    const channels = [];
+    let currentChannel = null;
+
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      if (trimmedLine.startsWith('#EXTINF')) {
+        const name = trimmedLine.split(',')[1]?.trim() || 'Canal sin nombre';
+        currentChannel = { name, url: null, extinf: trimmedLine };
+      } else if (trimmedLine.startsWith('http') && currentChannel) {
+        currentChannel.url = trimmedLine;
+        channels.push(currentChannel);
+        currentChannel = null;
+      }
+    }
+
+    // Verificar enlaces activos
+    const activeChannels = [];
+    const timeout = userConfigs[userId]?.timeout || 10000;
+    for (const channel of channels) {
+      try {
+        const headResponse = await axios.head(channel.url, { timeout });
+        if (headResponse.status === 200) {
+          activeChannels.push(channel);
+        }
+      } catch (error) {
+        logAction('mirror_check_error', { url: channel.url, error: error.message });
+      }
+    }
+
+    if (activeChannels.length === 0) {
+      await bot.editMessageText(`❌ ${userMention}, no se encontraron canales activos en la lista.${adminMessage}`, {
+        chat_id: chatId,
+        message_id: loadingMessage.message_id,
+        message_thread_id: allowedThreadId,
+        parse_mode: 'Markdown'
+      });
+      return;
+    }
+
+    // Crear nueva lista M3U
+    let newM3U = '#EXTM3U\n';
+    activeChannels.forEach(channel => {
+      newM3U += `${channel.extinf}\n${channel.url}\n`;
+    });
+
+    // Subir a Pastebin
+    const pasteUrl = await pastebin.createPaste({
+      text: newM3U,
+      title: `Espejo IPTV - ${userMention} - ${new Date().toLocaleDateString('es-ES')}`,
+      format: 'm3u',
+      privacy: 1 // 1 = Público no listado
+    });
+
+    // Responder al usuario
+    const responseText = `🪞 ${userMention}, aquí tienes tu espejo con ${activeChannels.length} canales activos:\n\n` +
+                         `[${escapeMarkdown(pasteUrl)}](${pasteUrl})\n\n` +
+                         `💡 Copia esta URL para usarla en tu reproductor IPTV.\n${adminMessage}`;
+
+    await bot.editMessageText(responseText, {
+      chat_id: chatId,
+      message_id: loadingMessage.message_id,
+      message_thread_id: allowedThreadId,
+      parse_mode: 'Markdown'
+    });
+
+    // Guardar en historial
+    if (!userHistory[userId]) userHistory[userId] = [];
+    userHistory[userId].push({ url: pasteUrl, result: { status: 'Activa', totalChannels: activeChannels.length }, timestamp: new Date() });
+    if (userHistory[userId].length > 50) userHistory[userId].shift();
+  } catch (error) {
+    logAction('mirror_error', { url, error: error.message });
+    await bot.editMessageText(`❌ ${userMention}, error al crear el espejo: ${error.message}${adminMessage}`, {
       chat_id: chatId,
       message_id: loadingMessage.message_id,
       message_thread_id: allowedThreadId,
