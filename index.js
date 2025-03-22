@@ -27,6 +27,7 @@ const ALLOWED_CHAT_IDS = [
 let userHistory = {};
 let userStates = {};
 let userConfigs = {};
+let userFavorites = {};
 
 // Mensaje fijo
 const adminMessage = '\n\n👨‍💼 *Equipo de Administración EntresHijos*';
@@ -45,17 +46,6 @@ function escapeMarkdown(text) {
 // Obtener mención del usuario
 function getUserMention(user) {
   return user.username ? `@${escapeMarkdown(user.username)}` : escapeMarkdown(user.first_name);
-}
-
-// Autoeliminar mensaje después de 5 minutos
-async function autoDeleteMessage(chatId, messageId, threadId) {
-  setTimeout(async () => {
-    try {
-      await bot.deleteMessage(chatId, messageId);
-    } catch (error) {
-      logAction('delete_message_error', { chatId, messageId, error: error.message });
-    }
-  }, 300000);
 }
 
 // Animación de carga
@@ -257,12 +247,11 @@ function formatResponse(msg, result, originalUrl) {
     ? result.server 
     : result.server;
 
-  // Asegurar que serverReal sea una URL válida y codificarla
   let serverRealLink = serverReal;
   try {
     serverRealLink = encodeURI(serverReal);
   } catch (e) {
-    serverRealLink = serverReal; // Si no es una URL válida, se muestra como texto
+    serverRealLink = serverReal;
   }
 
   const response = `✨ Hola ${userMention}, aquí tienes los detalles de tu lista IPTV ✨\n\n` +
@@ -318,41 +307,46 @@ bot.on('callback_query', async (query) => {
         parse_mode: 'Markdown'
       });
     } else if (query.data === 'guia') {
-      const helpMessage = `📖 *Guía de ${botName}* para ${userMention} 📖\n\n` +
-        `✨ *¿Qué soy?*\n` +
-        `Un bot gratuito exclusivo para EntresHijos que verifica listas IPTV de manera rápida y profesional.\n\n` +
-        `🔧 *¿Cómo usarme?*\n` +
-        `- Haz clic en "Verificar Lista" o envía un enlace IPTV válido.\n` +
-        `- Recibe un informe detallado al instante.\n` +
-        `- Los mensajes se eliminan tras 5 minutos para mantener el chat limpio.\n\n` +
-        `📋 *Formatos compatibles*:\n` +
+      const helpMessage = `🌟 *Bienvenido a ${botName}, ${userMention}!* 🌟\n\n` +
+        `👋 Somos un bot profesional y gratuito exclusivo para *EntresHijos*, diseñado para gestionar y verificar listas IPTV de forma sencilla y eficiente.\n\n` +
+        `📋 *Comandos disponibles*:\n` +
+        `- *🔍 /guia*: Muestra esta guía de uso.\n` +
+        `- *⏳ /timeout [segundos]*: Ajusta el tiempo de espera para verificaciones (en segundos).\n` +
+        `- *💾 /save [nombre]*: Guarda la última lista verificada con un nombre.\n` +
+        `- *📜 /list*: Lista todas tus listas guardadas.\n` +
+        `- *✅ /lista*: Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
+        `- *🎁 /generar*: Obtiene listas IPTV gratuitas de España verificadas.\n\n` +
+        `🔧 *Cómo usar el bot*:\n` +
+        `1️⃣ Usa los botones o envía un enlace IPTV válido.\n` +
+        `2️⃣ Recibe un informe detallado al instante.\n\n` +
+        `📡 *Formatos compatibles*:\n` +
         `- *Xtream*: \`http://server.com:80/get.php?username=xxx&password=yyy\`\n` +
         `- *M3U/M3U8*: \`http://server.com:80/playlist.m3u\`\n` +
         `- *TS/HLS*: \`http://server.com:80/stream.ts\`\n\n` +
-        `💡 *Pasos sencillos*:\n` +
-        `1. Usa "Verificar Lista" o envía tu enlace.\n` +
-        `2. Obtén una respuesta clara y rápida.\n\n` +
-        `🚀 *${botName} - Verificación Gratuita y Profesional*${adminMessage}`;
+        `💡 *Tip*: Usa /generar para probar listas gratuitas y /save para guardar tus favoritas.\n\n` +
+        `🚀 *${botName} - Tu aliado en IPTV*${adminMessage}`;
 
-      const message = await bot.sendMessage(chatId, helpMessage, {
+      await bot.sendMessage(chatId, helpMessage, {
         parse_mode: 'Markdown',
         message_thread_id: allowedThreadId,
         ...mainMenu
       });
-      autoDeleteMessage(chatId, message.message_id, allowedThreadId);
     }
   } catch (error) {
     logAction('callback_error', { action: query.data, error: error.message });
     if (error.response?.status === 429) {
       const retryAfter = error.response.data.parameters.retry_after || 1;
+      await bot.sendMessage(chatId, `⏳ ${userMention}, espera un momento, demasiadas solicitudes. Reintentando en ${retryAfter} segundos...${adminMessage}`, {
+        parse_mode: 'Markdown',
+        message_thread_id: allowedThreadId
+      });
       await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
       return;
     }
-    const message = await bot.sendMessage(chatId, `❌ ${userMention}, error: ${error.message}${adminMessage}`, {
+    await bot.sendMessage(chatId, `❌ ${userMention}, error: ${error.message}${adminMessage}`, {
       message_thread_id: allowedThreadId,
       parse_mode: 'Markdown'
     });
-    autoDeleteMessage(chatId, message.message_id, allowedThreadId);
   }
 });
 
@@ -370,16 +364,14 @@ bot.onText(/\/iptv/, async (msg) => {
     `🔧 Usa los botones o envía un enlace válido directamente.\n` +
     `ℹ️ Pulsa "Ayuda" para aprender a usarme.\n\n` +
     `👨‍💼 *Equipo de Administración EntresHijos*`;
-  const message = await bot.sendMessage(chatId, response, {
+  await bot.sendMessage(chatId, response, {
     parse_mode: 'Markdown',
     message_thread_id: allowedThreadId,
     ...mainMenu
   });
-
-  autoDeleteMessage(chatId, message.message_id, allowedThreadId);
 });
 
-// Comando /guia (mantiene compatibilidad)
+// Comando /guia
 bot.onText(/\/guia/, async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
@@ -388,52 +380,104 @@ bot.onText(/\/guia/, async (msg) => {
 
   if (!isAllowedContext(chatId, threadId)) return;
 
-  const helpMessage = `📖 *Guía de ${botName}* para ${userMention} 📖\n\n` +
-    `✨ *¿Qué soy?*\n` +
-    `Un bot gratuito exclusivo para EntresHijos que verifica listas IPTV de manera rápida y profesional.\n\n` +
-    `🔧 *¿Cómo usarme?*\n` +
-    `- Haz clic en "Verificar Lista" o envía un enlace IPTV válido.\n` +
-    `- Recibe un informe detallado al instante.\n` +
-    `- Los mensajes se eliminan tras 5 minutos para mantener el chat limpio.\n\n` +
-    `📋 *Formatos compatibles*:\n` +
+  const helpMessage = `🌟 *Bienvenido a ${botName}, ${userMention}!* 🌟\n\n` +
+    `👋 Somos un bot profesional y gratuito exclusivo para *EntresHijos*, diseñado para gestionar y verificar listas IPTV de forma sencilla y eficiente.\n\n` +
+    `📋 *Comandos disponibles*:\n` +
+    `- *🔍 /guia*: Muestra esta guía de uso.\n` +
+    `- *⏳ /timeout [segundos]*: Ajusta el tiempo de espera para verificaciones (en segundos).\n` +
+    `- *💾 /save [nombre]*: Guarda la última lista verificada con un nombre.\n` +
+    `- *📜 /list*: Lista todas tus listas guardadas.\n` +
+    `- *✅ /lista*: Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
+    `- *🎁 /generar*: Obtiene listas IPTV gratuitas de España verificadas.\n\n` +
+    `🔧 *Cómo usar el bot*:\n` +
+    `1️⃣ Usa los botones o envía un enlace IPTV válido.\n` +
+    `2️⃣ Recibe un informe detallado al instante.\n\n` +
+    `📡 *Formatos compatibles*:\n` +
     `- *Xtream*: \`http://server.com:80/get.php?username=xxx&password=yyy\`\n` +
     `- *M3U/M3U8*: \`http://server.com:80/playlist.m3u\`\n` +
     `- *TS/HLS*: \`http://server.com:80/stream.ts\`\n\n` +
-    `💡 *Pasos sencillos*:\n` +
-    `1. Usa "Verificar Lista" o envía tu enlace.\n` +
-    `2. Obtén una respuesta clara y rápida.\n\n` +
-    `🚀 *${botName} - Verificación Gratuita y Profesional*${adminMessage}`;
+    `💡 *Tip*: Usa /generar para probar listas gratuitas y /save para guardar tus favoritas.\n\n` +
+    `🚀 *${botName} - Tu aliado en IPTV*${adminMessage}`;
 
-  const message = await bot.sendMessage(chatId, helpMessage, {
+  await bot.sendMessage(chatId, helpMessage, {
     parse_mode: 'Markdown',
     message_thread_id: allowedThreadId,
     ...mainMenu
   });
-
-  autoDeleteMessage(chatId, message.message_id, allowedThreadId);
 });
 
-// Comando oculto /historial
+// Comando /menu (exclusivo para grupo de administración)
+bot.onText(/\/menu/, async (msg) => {
+  const chatId = msg.chat.id;
+  const threadId = msg.message_thread_id || '0';
+  const userMention = getUserMention(msg.from);
+  const allowedThreadId = getAllowedThreadId(chatId);
+
+  if (String(chatId) !== '-1002565012502' || !isAllowedContext(chatId, threadId)) return;
+
+  const menuMessage = `🛠 *Menú Completo de ${botName} para ${userMention}* 🛠\n\n` +
+    `👋 Bienvenido al panel de comandos completo de *${botName}*. Aquí tienes todas las herramientas disponibles:\n\n` +
+    `📋 *Comandos Públicos*:\n` +
+    `- *🔍 /guia*: Muestra la guía básica para usuarios.\n` +
+    `- *⏳ /timeout [segundos]*: Ajusta el tiempo de espera para verificaciones (ejemplo: /timeout 5).\n` +
+    `- *💾 /save [nombre]*: Guarda la última lista verificada con un nombre personalizado.\n` +
+    `- *📜 /list*: Muestra todas las listas guardadas del usuario.\n` +
+    `- *✅ /lista*: Lista las listas activas guardadas, ordenadas por fecha de caducidad.\n` +
+    `- *🎁 /generar*: Genera y verifica listas IPTV gratuitas de España.\n\n` +
+    `🔒 *Comandos de Administración* (solo aquí):\n` +
+    `- *📊 /historial*: Muestra el historial completo de verificaciones de todos los usuarios.\n` +
+    `- *🌟 /iptv*: Comando de bienvenida inicial (uso interno).\n\n` +
+    `🔧 *Cómo funciona*:\n` +
+    `- Envía un enlace IPTV o usa los botones para verificar.\n` +
+    `- Usa /save después de verificar para guardar listas.\n` +
+    `- Las listas favoritas se verifican automáticamente cada 24 horas.\n\n` +
+    `💡 *Nota*: Los comandos de administración son exclusivos de este grupo.\n\n` +
+    `🚀 *${botName} - Gestión Avanzada de IPTV*${adminMessage}`;
+
+  await bot.sendMessage(chatId, menuMessage, {
+    parse_mode: 'Markdown',
+    message_thread_id: allowedThreadId
+  });
+});
+
+// Comando /timeout
+bot.onText(/\/timeout (\d+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const timeout = parseInt(match[1]) * 1000; // Convertir a milisegundos
+  if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
+  userConfigs[userId] = { timeout };
+  await bot.sendMessage(chatId, `⏳ Timeout ajustado a ${match[1]} segundos para ${getUserMention(msg.from)}.${adminMessage}`, {
+    parse_mode: 'Markdown',
+    message_thread_id: getAllowedThreadId(chatId)
+  });
+});
+
+// Comando /historial (solo admin)
 bot.onText(/\/historial/, async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
   const userMention = getUserMention(msg.from);
   const allowedThreadId = getAllowedThreadId(chatId);
 
-  if (String(chatId) !== '-1002565012502' || !isAllowedContext(chatId, threadId)) {
-    return; // Comando oculto, no responde fuera del grupo permitido
-  }
+  if (String(chatId) !== '-1002565012502' || !isAllowedContext(chatId, threadId)) return;
 
   if (Object.keys(userHistory).length === 0) {
-    const message = await bot.sendMessage(chatId, `📜 Hola ${userMention}, aún no hay historial de uso en *${botName}*.${adminMessage}`, {
+    await bot.sendMessage(chatId, `📜 Hola ${userMention}, aún no hay historial de uso en *${botName}*.${adminMessage}`, {
       parse_mode: 'Markdown',
       message_thread_id: allowedThreadId
     });
-    autoDeleteMessage(chatId, message.message_id, allowedThreadId);
     return;
   }
 
-  let historyText = `📜 *Historial de Uso de ${botName}* 📜\n\n`;
+  let totalChecks = 0, activeCount = 0;
+  for (const history of Object.values(userHistory)) {
+    totalChecks += history.length;
+    activeCount += history.filter(entry => entry.result.status === 'Activa').length;
+  }
+
+  let historyText = `📜 *Historial de Uso de ${botName}* 📜\n\n` +
+                   `📊 *Estadísticas*: ${totalChecks} verificaciones, ${activeCount} activas\n\n`;
   for (const [userId, history] of Object.entries(userHistory)) {
     const user = history[0].url ? await bot.getChatMember(chatId, userId).then(member => member.user) : { username: 'Desconocido', first_name: 'Usuario' };
     const userMention = getUserMention(user);
@@ -449,11 +493,178 @@ bot.onText(/\/historial/, async (msg) => {
   }
   historyText += `🚀 *${botName} - Verificación Profesional y Gratuita*${adminMessage}`;
 
-  const message = await bot.sendMessage(chatId, historyText, {
+  await bot.sendMessage(chatId, historyText, {
     parse_mode: 'Markdown',
     message_thread_id: allowedThreadId
   });
-  autoDeleteMessage(chatId, message.message_id, allowedThreadId);
+});
+
+// Comando /save
+bot.onText(/\/save (.+)/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const name = match[1];
+  const allowedThreadId = getAllowedThreadId(chatId);
+  if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
+
+  if (!userHistory[userId] || !userHistory[userId].length) {
+    await bot.sendMessage(chatId, `❌ ${getUserMention(msg.from)}, no tienes listas recientes para guardar.${adminMessage}`, {
+      parse_mode: 'Markdown',
+      message_thread_id: allowedThreadId
+    });
+    return;
+  }
+
+  const lastUrl = userHistory[userId][userHistory[userId].length - 1].url;
+  if (!userFavorites[userId]) userFavorites[userId] = {};
+  userFavorites[userId][name] = lastUrl;
+  await bot.sendMessage(chatId, `💾 Lista "${name}" guardada: ${lastUrl}${adminMessage}`, {
+    parse_mode: 'Markdown',
+    message_thread_id: allowedThreadId
+  });
+});
+
+// Comando /list
+bot.onText(/\/list/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const allowedThreadId = getAllowedThreadId(chatId);
+  if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
+
+  if (!userFavorites[userId] || !Object.keys(userFavorites[userId]).length) {
+    await bot.sendMessage(chatId, `📋 ${getUserMention(msg.from)}, no tienes listas guardadas.${adminMessage}`, {
+      parse_mode: 'Markdown',
+      message_thread_id: allowedThreadId
+    });
+    return;
+  }
+
+  let listText = `📋 Listas guardadas de ${getUserMention(msg.from)}:\n`;
+  for (const [name, url] of Object.entries(userFavorites[userId])) {
+    listText += `- *${name}*: [${escapeMarkdown(url)}](${url})\n`;
+  }
+  listText += adminMessage;
+
+  await bot.sendMessage(chatId, listText, {
+    parse_mode: 'Markdown',
+    message_thread_id: allowedThreadId
+  });
+});
+
+// Comando /lista (listas activas ordenadas por fecha de caducidad)
+bot.onText(/\/lista/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const allowedThreadId = getAllowedThreadId(chatId);
+  if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
+
+  if (!userFavorites[userId] || !Object.keys(userFavorites[userId]).length) {
+    await bot.sendMessage(chatId, `📋 ${getUserMention(msg.from)}, no tienes listas guardadas para mostrar.${adminMessage}`, {
+      parse_mode: 'Markdown',
+      message_thread_id: allowedThreadId
+    });
+    return;
+  }
+
+  const activeLists = [];
+  for (const [name, url] of Object.entries(userFavorites[userId])) {
+    const historyEntry = userHistory[userId]?.find(h => h.url === url);
+    if (historyEntry && historyEntry.result.status === 'Activa') {
+      activeLists.push({
+        name,
+        url,
+        expiresAt: historyEntry.result.expiresAt || 'Ilimitada',
+        expiresTimestamp: historyEntry.result.expiresAt === 'Ilimitada' ? Infinity : new Date(historyEntry.result.expiresAt).getTime()
+      });
+    }
+  }
+
+  if (activeLists.length === 0) {
+    await bot.sendMessage(chatId, `📋 ${getUserMention(msg.from)}, no tienes listas activas guardadas.${adminMessage}`, {
+      parse_mode: 'Markdown',
+      message_thread_id: allowedThreadId
+    });
+    return;
+  }
+
+  activeLists.sort((a, b) => b.expiresTimestamp - a.expiresTimestamp);
+
+  let listText = `📋 Listas activas de ${getUserMention(msg.from)} (ordenadas por caducidad):\n`;
+  activeLists.forEach(list => {
+    listText += `- *${list.name}*: [${escapeMarkdown(list.url)}](${list.url}) - Expira: ${list.expiresAt}\n`;
+  });
+  listText += adminMessage;
+
+  await bot.sendMessage(chatId, listText, {
+    parse_mode: 'Markdown',
+    message_thread_id: allowedThreadId
+  });
+});
+
+// Comando /generar (generar listas gratuitas de España)
+bot.onText(/\/generar/, async (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const allowedThreadId = getAllowedThreadId(chatId);
+  const userMention = getUserMention(msg.from);
+  if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
+
+  const loadingMessage = await bot.sendMessage(chatId, `⏳ ${userMention}, buscando listas IPTV gratuitas de España...${adminMessage}`, {
+    parse_mode: 'Markdown',
+    message_thread_id: allowedThreadId
+  });
+
+  try {
+    const sources = [
+      'https://iptv-org.github.io/iptv/countries/es.m3u',
+      'https://www.tdtchannels.com/lists/tv.m3u8'
+    ];
+
+    const lists = [];
+    for (const source of sources) {
+      const response = await axios.get(source, { timeout: 5000 });
+      if (response.status === 200) {
+        lists.push({ url: source, type: source.endsWith('.m3u8') ? 'M3U8' : 'M3U' });
+      }
+    }
+
+    if (lists.length === 0) {
+      await bot.editMessageText(`❌ ${userMention}, no se encontraron listas gratuitas confiables en este momento.${adminMessage}`, {
+        chat_id: chatId,
+        message_id: loadingMessage.message_id,
+        message_thread_id: allowedThreadId,
+        parse_mode: 'Markdown'
+      });
+      return;
+    }
+
+    let responseText = `🎉 ${userMention}, aquí tienes listas IPTV gratuitas de España:\n\n`;
+    for (const list of lists) {
+      const result = await checkIPTVList(list.url, userId);
+      if (result.status === 'Activa') {
+        responseText += `- *${list.type} España*: [${escapeMarkdown(list.url)}](${list.url}) - Canales: ${result.totalChannels || 'Desconocido'}\n`;
+        if (!userHistory[userId]) userHistory[userId] = [];
+        userHistory[userId].push({ url: list.url, result, timestamp: new Date() });
+        if (userHistory[userId].length > 50) userHistory[userId].shift();
+      }
+    }
+    responseText += `\n💡 Usa /save [nombre] para guardar una lista.\n${adminMessage}`;
+
+    await bot.editMessageText(responseText, {
+      chat_id: chatId,
+      message_id: loadingMessage.message_id,
+      message_thread_id: allowedThreadId,
+      parse_mode: 'Markdown'
+    });
+  } catch (error) {
+    logAction('generate_error', { error: error.message });
+    await bot.editMessageText(`❌ ${userMention}, error al generar listas: ${error.message}${adminMessage}`, {
+      chat_id: chatId,
+      message_id: loadingMessage.message_id,
+      message_thread_id: allowedThreadId,
+      parse_mode: 'Markdown'
+    });
+  }
 });
 
 // Procesar URLs IPTV
@@ -482,12 +693,11 @@ bot.on('message', async (msg) => {
         `- *TS/HLS*: \`http://server.com:80/stream.ts\`\n\n` +
         `🔧 Por favor, envía un enlace en uno de estos formatos.\n` +
         `🚀 *${botName} - Verificación Profesional*${adminMessage}`;
-      const message = await bot.sendMessage(chatId, invalidMessage, {
+      await bot.sendMessage(chatId, invalidMessage, {
         parse_mode: 'Markdown',
         message_thread_id: allowedThreadId,
         ...mainMenu
       });
-      autoDeleteMessage(chatId, message.message_id, allowedThreadId);
       return;
     }
 
@@ -495,7 +705,6 @@ bot.on('message', async (msg) => {
       parse_mode: 'Markdown',
       message_thread_id: allowedThreadId
     });
-    autoDeleteMessage(chatId, checkingMessage.message_id, allowedThreadId);
 
     await showLoadingAnimation(chatId, allowedThreadId, checkingMessage.message_id, `🔎 ${userMention}, verificando ${escapeMarkdown(url)}...`);
 
@@ -503,6 +712,7 @@ bot.on('message', async (msg) => {
 
     if (!userHistory[userId]) userHistory[userId] = [];
     userHistory[userId].push({ url, result, timestamp: new Date() });
+    if (userHistory[userId].length > 50) userHistory[userId].shift();
 
     const { text: responseText } = formatResponse(msg, result, url);
 
@@ -515,6 +725,27 @@ bot.on('message', async (msg) => {
     });
 
     userStates[userId].action = null;
+  }
+});
+
+// Verificación programada de listas favoritas (cada 24 horas a medianoche)
+cron.schedule('0 0 * * *', async () => {
+  for (const [userId, favorites] of Object.entries(userFavorites)) {
+    for (const [name, url] of Object.entries(favorites)) {
+      const lastResult = userHistory[userId]?.find(h => h.url === url)?.result.status;
+      const result = await checkIPTVList(url, userId);
+      if (lastResult && result.status !== lastResult) {
+        const chatId = ALLOWED_CHAT_IDS[0].chatId;
+        const allowedThreadId = getAllowedThreadId(chatId);
+        await bot.sendMessage(chatId, `📢 La lista "${name}" de ${userId} cambió a *${result.status}*!${adminMessage}`, {
+          parse_mode: 'Markdown',
+          message_thread_id: allowedThreadId
+        });
+      }
+      if (!userHistory[userId]) userHistory[userId] = [];
+      userHistory[userId].push({ url, result, timestamp: new Date() });
+      if (userHistory[userId].length > 50) userHistory[userId].shift();
+    }
   }
 });
 
