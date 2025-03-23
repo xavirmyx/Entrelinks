@@ -126,27 +126,63 @@ async function restructureDatabase() {
 
   for (const [tableName, schema] of Object.entries(requiredTables)) {
     try {
-      const { data, error } = await supabase.rpc('table_exists', { table_name: tableName });
-      if (error) throw error;
+      // Verificar si la tabla existe usando una consulta directa
+      const { data: tableExists, error: tableExistsError } = await supabase
+        .from('pg_tables')
+        .select('tablename')
+        .eq('schemaname', 'public')
+        .eq('tablename', tableName);
 
-      if (!data) {
+      if (tableExistsError) {
+        logAction('table_exists_error', { table: tableName, error: tableExistsError.message });
+        throw tableExistsError;
+      }
+
+      if (!tableExists || tableExists.length === 0) {
+        // Crear la tabla si no existe
         const columnDefs = Object.entries(schema.columns).map(([col, def]) => `${col} ${def}`).join(', ');
-        await supabase.rpc('execute_sql', { sql: `CREATE TABLE ${tableName} (${columnDefs});` });
+        const createTableQuery = `CREATE TABLE public.${tableName} (${columnDefs});`;
+        const { error: createError } = await supabase.rpc('execute_sql', { sql: createTableQuery });
+        if (createError) {
+          logAction('create_table_error', { table: tableName, error: createError.message });
+          throw createError;
+        }
         logAction('table_created', { table: tableName });
       } else {
-        const { data: columns, error: colError } = await supabase.rpc('get_table_columns', { table_name: tableName });
-        if (colError) throw colError;
+        // Verificar y corregir columnas
+        const { data: columns, error: colError } = await supabase
+          .from('information_schema.columns')
+          .select('column_name')
+          .eq('table_schema', 'public')
+          .eq('table_name', tableName);
+
+        if (colError) {
+          logAction('get_columns_error', { table: tableName, error: colError.message });
+          throw colError;
+        }
 
         const existingColumns = columns.map(col => col.column_name);
         for (const [colName, colDef] of Object.entries(schema.columns)) {
           if (!existingColumns.includes(colName)) {
-            await supabase.rpc('execute_sql', { sql: `ALTER TABLE ${tableName} ADD COLUMN ${colName} ${colDef.split(' ').slice(1).join(' ')};` });
+            const addColumnQuery = `ALTER TABLE public.${tableName} ADD COLUMN ${colName} ${colDef.split(' ').slice(1).join(' ')};`;
+            const { error: addColError } = await supabase.rpc('execute_sql', { sql: addColumnQuery });
+            if (addColError) {
+              logAction('add_column_error', { table: tableName, column: colName, error: addColError.message });
+              throw addColError;
+            }
             logAction('column_added', { table: tableName, column: colName });
           }
         }
       }
     } catch (error) {
       logAction('database_restructure_error', { table: tableName, error: error.message });
+      // Enviar notificación al grupo si falla la creación de tablas
+      const chatId = ALLOWED_CHAT_IDS[0].chatId;
+      const threadId = getAllowedThreadId(chatId);
+      await bot.sendMessage(chatId, `⚠️ Error al reestructurar la base de datos: ${error.message}${adminMessage}`, {
+        parse_mode: 'Markdown',
+        message_thread_id: threadId
+      });
     }
   }
 }
@@ -155,6 +191,8 @@ async function restructureDatabase() {
 async function initializeBot() {
   await restructureDatabase();
   logAction('bot_initialized', { status: 'success' });
+  // Forzar la generación de listas públicas al iniciar
+  await generatePublicLists();
 }
 
 // Ruta webhook (para Render)
@@ -727,7 +765,9 @@ async function handleGenerate(chatId, threadId, messageId, userId, userMention) 
       { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK' },
       { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes' },
       { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General' },
-      { url: 'https://m3u.cl/lista.m3u', category: 'General' }
+      { url: 'https://m3u.cl/lista.m3u', category: 'General' },
+      { url: 'https://iptv-org.github.io/iptv/categories/movies.m3u', category: 'Películas' },
+      { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias' }
     ];
 
     const dynamicSources = [];
@@ -758,7 +798,7 @@ async function handleGenerate(chatId, threadId, messageId, userId, userMention) 
         publicLists.push(source.url);
         if (publicLists.length > 100) publicLists.shift();
 
-        await supabase.from('public_lists').insert({
+        const { error } = await supabase.from('public_lists').insert({
           url: source.url,
           type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U',
           category: source.category,
@@ -767,6 +807,11 @@ async function handleGenerate(chatId, threadId, messageId, userId, userMention) 
           expires_at: result.expiresAt || 'Desconocida',
           last_checked: new Date().toISOString()
         });
+
+        if (error) {
+          logAction('insert_public_list_error', { url: source.url, error: error.message });
+          throw new Error(`Error al insertar lista pública: ${error.message}`);
+        }
       }
     }
 
@@ -784,6 +829,7 @@ async function handleGenerate(chatId, threadId, messageId, userId, userMention) 
       ...mainMenu
     });
   } catch (error) {
+    logAction('generate_error', { error: error.message });
     await bot.editMessageText(`❌ ${userMention}, error al generar listas: ${error.message}${adminMessage}`, {
       chat_id: chatId,
       message_id: loadingMessage.message_id,
@@ -814,7 +860,19 @@ async function handlePublicLists(chatId, threadId, messageId, userId, userMentio
     .order('last_checked', { ascending: false })
     .limit(5);
 
-  if (error || !lists || lists.length === 0) {
+  if (error) {
+    logAction('fetch_public_lists_error', { error: error.message });
+    await bot.editMessageText(`❌ ${userMention}, error al cargar listas públicas: ${error.message}${adminMessage}`, {
+      chat_id: chatId,
+      message_id: loadingMessage.message_id,
+      message_thread_id: threadId,
+      parse_mode: 'Markdown',
+      ...mainMenu
+    });
+    return;
+  }
+
+  if (!lists || lists.length === 0) {
     await bot.editMessageText(`📚 ${userMention}, no hay listas públicas disponibles en este momento. Usa "Generar Listas" para crear nuevas.${adminMessage}`, {
       chat_id: chatId,
       message_id: loadingMessage.message_id,
@@ -951,10 +1009,10 @@ async function handleMirror(chatId, threadId, url, userId, userMention) {
 
   // Fuentes para buscar espejos
   const mirrorSources = [
-    { url: url.replace(/server\.com/, 'mirror1.com'), source: 'Simulación 1' },
-    { url: url.replace(/server\.com/, 'mirror2.com'), source: 'Simulación 2' },
-    { url: `https://iptv-org.github.io/iptv/countries/es.m3u`, source: 'IPTV-Org España' },
-    { url: `https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8`, source: 'Free-TV' }
+    { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', source: 'IPTV-Org España' },
+    { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', source: 'Free-TV' },
+    { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', source: 'IPTVCat' },
+    { url: 'https://m3u.cl/lista.m3u', source: 'M3U.CL' }
   ];
 
   // Generar posibles espejos basados en patrones de dominio
@@ -966,8 +1024,18 @@ async function handleMirror(chatId, threadId, url, userId, userMention) {
   const mirrorCandidates = [
     ...mirrorSources,
     { url: url.replace(domain, `${subDomain || 'mirror'}-backup.${baseDomain}`), source: 'Patrón de subdominio' },
-    { url: url.replace(domain, `backup-${baseDomain}`), source: 'Patrón de backup' }
+    { url: url.replace(domain, `backup-${baseDomain}`), source: 'Patrón de backup' },
+    { url: url.replace(domain, `mirror-${baseDomain}`), source: 'Patrón de mirror' }
   ];
+
+  // Buscar espejos dinámicos desde iptvcat.com
+  try {
+    const iptvCatResponse = await axiosInstance.get('https://iptvcat.com/spain/');
+    const iptvCatLinks = iptvCatResponse.data.match(/(http[s]?:\/\/[^\s]+\.m3u)/g) || [];
+    mirrorCandidates.push(...iptvCatLinks.map(url => ({ url, source: 'IPTVCat Dynamic' })));
+  } catch (error) {
+    logAction('iptvcat_mirror_error', { error: error.message });
+  }
 
   await showPercentageAnimation(chatId, threadId, loadingMessage.message_id, `🪞 ${userMention}, buscando servidores espejo...`, mirrorCandidates.length);
 
@@ -976,12 +1044,15 @@ async function handleMirror(chatId, threadId, url, userId, userMention) {
     const mirrorResult = await checkIPTVList(candidate.url, userId);
     if (mirrorResult.status === 'Activa') {
       activeMirror = candidate.url;
-      await supabase.from('mirrors').insert({
+      const { error } = await supabase.from('mirrors').insert({
         original_url: url,
         mirror_url: candidate.url,
         status: 'Active',
         last_checked: new Date().toISOString()
       });
+      if (error) {
+        logAction('insert_mirror_error', { url: candidate.url, error: error.message });
+      }
       break;
     }
   }
@@ -997,6 +1068,69 @@ async function handleMirror(chatId, threadId, url, userId, userMention) {
     message_thread_id: threadId,
     parse_mode: 'Markdown',
     ...mainMenu
+  });
+}
+
+// Función para generar listas públicas
+async function generatePublicLists() {
+  const chatId = ALLOWED_CHAT_IDS[0].chatId;
+  const threadId = getAllowedThreadId(chatId);
+  await bot.sendMessage(chatId, `⏳ Generando nuevas listas públicas...${adminMessage}`, {
+    parse_mode: 'Markdown',
+    message_thread_id: threadId
+  });
+
+  const staticSources = [
+    { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España' },
+    { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español' },
+    { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes' },
+    { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General' },
+    { url: 'https://m3u.cl/lista.m3u', category: 'General' },
+    { url: 'https://iptv-org.github.io/iptv/categories/movies.m3u', category: 'Películas' },
+    { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias' }
+  ];
+
+  const dynamicSources = [];
+  try {
+    const iptvCatResponse = await axiosInstance.get('https://iptvcat.com/spain/');
+    const iptvCatLinks = iptvCatResponse.data.match(/(http[s]?:\/\/[^\s]+\.m3u)/g) || [];
+    dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)' })));
+  } catch (error) {
+    logAction('iptvcat_error', { error: error.message });
+  }
+
+  const allSources = [...staticSources, ...dynamicSources].filter(source => !publicLists.includes(source.url));
+  const sourcesToProcess = allSources.slice(0, 5);
+
+  for (const source of sourcesToProcess) {
+    const result = await checkIPTVList(source.url, 'cron');
+    if (result.status === 'Activa') {
+      const { error } = await supabase.from('public_lists').insert({
+        url: source.url,
+        type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U',
+        category: source.category,
+        status: result.status,
+        total_channels: result.totalChannels || 0,
+        expires_at: result.expiresAt || 'Desconocida',
+        last_checked: new Date().toISOString()
+      });
+      if (error) {
+        logAction('insert_public_list_error', { url: source.url, error: error.message });
+        continue;
+      }
+      publicLists.push(source.url);
+      if (publicLists.length > 100) publicLists.shift();
+    }
+  }
+
+  await bot.sendMessage(chatId, `✅ Nuevas listas públicas generadas. Usa /listaspublicas para verlas.${adminMessage}`, {
+    parse_mode: 'Markdown',
+    message_thread_id: threadId
   });
 }
 
@@ -1023,61 +1157,11 @@ cron.schedule('0 */6 * * *', async () => {
   }
 }, { scheduled: true, timezone: 'Europe/Madrid' });
 
-// Generar listas públicas cada 12 horas
-cron.schedule('0 */12 * * *', async () => {
-  const chatId = ALLOWED_CHAT_IDS[0].chatId;
-  const threadId = getAllowedThreadId(chatId);
-  await bot.sendMessage(chatId, `⏳ Generando nuevas listas públicas...${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId
-  });
-
-  const staticSources = [
-    { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España' },
-    { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español' },
-    { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes' },
-    { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General' },
-    { url: 'https://m3u.cl/lista.m3u', category: 'General' }
-  ];
-
-  const dynamicSources = [];
-  try {
-    const iptvCatResponse = await axiosInstance.get('https://iptvcat.com/spain/');
-    const iptvCatLinks = iptvCatResponse.data.match(/(http[s]?:\/\/[^\s]+\.m3u)/g) || [];
-    dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)' })));
-  } catch (error) {
-    logAction('iptvcat_error', { error: error.message });
-  }
-
-  const allSources = [...staticSources, ...dynamicSources].filter(source => !publicLists.includes(source.url));
-  const sourcesToProcess = allSources.slice(0, 5);
-
-  for (const source of sourcesToProcess) {
-    const result = await checkIPTVList(source.url, 'cron');
-    if (result.status === 'Activa') {
-      await supabase.from('public_lists').insert({
-        url: source.url,
-        type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U',
-        category: source.category,
-        status: result.status,
-        total_channels: result.totalChannels || 0,
-        expires_at: result.expiresAt || 'Desconocida',
-        last_checked: new Date().toISOString()
-      });
-      publicLists.push(source.url);
-      if (publicLists.length > 100) publicLists.shift();
-    }
-  }
-
-  await bot.sendMessage(chatId, `✅ Nuevas listas públicas generadas. Usa /listaspublicas para verlas.${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId
-  });
+// Generar listas públicas cada 4 horas
+cron.schedule('0 */4 * * *', async () => {
+  logAction('cron_generate_public_lists_start', {});
+  await generatePublicLists();
+  logAction('cron_generate_public_lists_end', {});
 }, { scheduled: true, timezone: 'Europe/Madrid' });
 
 // Mantener servidor activo (para UptimeRobot)
