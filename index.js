@@ -20,7 +20,7 @@ const webhookUrl = 'https://entrelinks.onrender.com';
 
 // Configuración de Supabase
 const supabaseUrl = 'https://jxpdivtccnhsspvwfpdl.supabase.co';
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4cGRpdnRjY25oc3NwdndmcGRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDI2NDc1MzYsImV4cCI6MjA1ODIyMzUzNn0.oVV31TUxJeCEZZByLb5gsvl9vpme8XZ9XnOKoaZFJKI';
+const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4cGRpdnRjY25oc3NwdndmcGRsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0MjY0NzUzNiwiZXhwIjoyMDU4MjIzNTM2fQ.Z74CydZxXmrM7W_qTZkdIWC22DHL_CS0qb_l5r_C3dA';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // IDs permitidos (solo el grupo de administradores)
@@ -43,9 +43,9 @@ function logAction(action, details) {
   console.log(`[${timestamp}] ${action}:`, details);
 }
 
-// Escapar caracteres para Markdown
+// Escapar caracteres para Markdown (actualizado para manejar más caracteres)
 function escapeMarkdown(text) {
-  return text.replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
+  return text.replace(/([_*[\]()~`>#+\-=|{}.!\\"])/g, '\\$1');
 }
 
 // Obtener mención del usuario
@@ -93,7 +93,7 @@ async function restructureDatabase() {
   const requiredTables = {
     'public_lists': {
       columns: {
-        id: 'uuid default uuid_generate_v4() primary key',
+        id: 'SERIAL PRIMARY KEY',
         url: 'text not null',
         type: 'text',
         category: 'text',
@@ -105,16 +105,16 @@ async function restructureDatabase() {
     },
     'votes': {
       columns: {
-        id: 'uuid default uuid_generate_v4() primary key',
-        list_id: 'uuid references public_lists(id)',
-        user_id: 'bigint',
+        id: 'SERIAL PRIMARY KEY',
+        list_id: 'integer references public_lists(id) on delete cascade',
+        user_id: 'text not null',
         vote_type: 'text',
         created_at: 'timestamp with time zone default now()'
       }
     },
     'mirrors': {
       columns: {
-        id: 'uuid default uuid_generate_v4() primary key',
+        id: 'SERIAL PRIMARY KEY',
         original_url: 'text not null',
         mirror_url: 'text not null',
         status: 'text default \'Pending\'',
@@ -178,10 +178,18 @@ async function restructureDatabase() {
       // Enviar notificación al grupo si falla la creación de tablas
       const chatId = ALLOWED_CHAT_IDS[0].chatId;
       const threadId = getAllowedThreadId(chatId);
-      await bot.sendMessage(chatId, `⚠️ Error al reestructurar la base de datos: ${error.message}${adminMessage}`, {
-        parse_mode: 'Markdown',
-        message_thread_id: threadId
-      });
+      const escapedErrorMessage = escapeMarkdown(error.message);
+      try {
+        await bot.sendMessage(chatId, `⚠️ Error al reestructurar la base de datos: ${escapedErrorMessage}${adminMessage}`, {
+          parse_mode: 'Markdown',
+          message_thread_id: threadId
+        });
+      } catch (telegramError) {
+        // Fallback a texto plano si Markdown falla
+        await bot.sendMessage(chatId, `⚠️ Error al reestructurar la base de datos: ${error.message}${adminMessage}`, {
+          message_thread_id: threadId
+        });
+      }
     }
   }
 }
