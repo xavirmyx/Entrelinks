@@ -125,12 +125,17 @@ async function restructureDatabase() {
 
   for (const [tableName, schema] of Object.entries(requiredTables)) {
     try {
-      // Verificar si la tabla existe usando information_schema.tables
-      const { data: tableExists, error: tableExistsError } = await supabase
-        .from('information_schema.tables')
-        .select('table_name')
-        .eq('table_schema', 'public')
-        .eq('table_name', tableName);
+      // Verificar si la tabla existe usando una consulta SQL directa
+      const checkTableQuery = `
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = $1
+      `;
+      const { data: tableExists, error: tableExistsError } = await supabase.rpc('execute_sql', {
+        sql: checkTableQuery,
+        params: [tableName]
+      });
 
       if (tableExistsError) {
         logAction('table_exists_error', { table: tableName, error: tableExistsError.message });
@@ -149,11 +154,16 @@ async function restructureDatabase() {
         logAction('table_created', { table: tableName });
       } else {
         // Verificar y corregir columnas
-        const { data: columns, error: colError } = await supabase
-          .from('information_schema.columns')
-          .select('column_name')
-          .eq('table_schema', 'public')
-          .eq('table_name', tableName);
+        const checkColumnsQuery = `
+          SELECT column_name 
+          FROM information_schema.columns 
+          WHERE table_schema = 'public' 
+          AND table_name = $1
+        `;
+        const { data: columns, error: colError } = await supabase.rpc('execute_sql', {
+          sql: checkColumnsQuery,
+          params: [tableName]
+        });
 
         if (colError) {
           logAction('get_columns_error', { table: tableName, error: colError.message });
@@ -1119,122 +1129,122 @@ async function handleMirror(chatId, threadId, url, userId, userMention) {
   });
 }
 
-      // Función para generar listas públicas
-      async function generatePublicLists() {
-        const chatId = ALLOWED_CHAT_IDS[0].chatId;
-        const threadId = getAllowedThreadId(chatId);
-        await bot.sendMessage(chatId, `⏳ Generando nuevas listas públicas...${adminMessage}`, {
-          parse_mode: 'Markdown',
-          message_thread_id: threadId
-        });
+// Función para generar listas públicas
+async function generatePublicLists() {
+  const chatId = ALLOWED_CHAT_IDS[0].chatId;
+  const threadId = getAllowedThreadId(chatId);
+  await bot.sendMessage(chatId, `⏳ Generando nuevas listas públicas...${adminMessage}`, {
+    parse_mode: 'Markdown',
+    message_thread_id: threadId
+  });
 
-        const staticSources = [
-          { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España' },
-          { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español' },
-          { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' },
-          { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México' },
-          { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina' },
-          { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA' },
-          { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK' },
-          { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes' },
-          { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General' },
-          { url: 'https://m3u.cl/lista.m3u', category: 'General' },
-          { url: 'https://iptv-org.github.io/iptv/categories/movies.m3u', category: 'Películas' },
-          { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias' }
-        ];
+  const staticSources = [
+    { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España' },
+    { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español' },
+    { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK' },
+    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes' },
+    { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General' },
+    { url: 'https://m3u.cl/lista.m3u', category: 'General' },
+    { url: 'https://iptv-org.github.io/iptv/categories/movies.m3u', category: 'Películas' },
+    { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias' }
+  ];
 
-        const dynamicSources = [];
-        try {
-          const iptvCatResponse = await axiosInstance.get('https://iptvcat.com/spain/');
-          const iptvCatLinks = iptvCatResponse.data.match(/(http[s]?:\/\/[^\s]+\.m3u)/g) || [];
-          dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)' })));
-        } catch (error) {
-          logAction('iptvcat_error', { error: error.message });
-        }
+  const dynamicSources = [];
+  try {
+    const iptvCatResponse = await axiosInstance.get('https://iptvcat.com/spain/');
+    const iptvCatLinks = iptvCatResponse.data.match(/(http[s]?:\/\/[^\s]+\.m3u)/g) || [];
+    dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)' })));
+  } catch (error) {
+    logAction('iptvcat_error', { error: error.message });
+  }
 
-        const allSources = [...staticSources, ...dynamicSources].filter(source => !publicLists.includes(source.url));
-        const sourcesToProcess = allSources.slice(0, 5);
+  const allSources = [...staticSources, ...dynamicSources].filter(source => !publicLists.includes(source.url));
+  const sourcesToProcess = allSources.slice(0, 5);
 
-        for (const source of sourcesToProcess) {
-          const result = await checkIPTVList(source.url, 'cron');
-          if (result.status === 'Activa') {
-            const { error } = await supabase.from('public_lists').insert({
-              url: source.url,
-              type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U',
-              category: source.category,
-              status: result.status,
-              total_channels: result.totalChannels || 0,
-              expires_at: result.expiresAt || 'Desconocida',
-              last_checked: new Date().toISOString()
-            });
+  for (const source of sourcesToProcess) {
+    const result = await checkIPTVList(source.url, 'cron');
+    if (result.status === 'Activa') {
+      const { error } = await supabase.from('public_lists').insert({
+        url: source.url,
+        type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U',
+        category: source.category,
+        status: result.status,
+        total_channels: result.totalChannels || 0,
+        expires_at: result.expiresAt || 'Desconocida',
+        last_checked: new Date().toISOString()
+      });
 
-            if (error) {
-              logAction('insert_public_list_error', { url: source.url, error: error.message });
-              continue;
-            }
-
-            publicLists.push(source.url);
-            if (publicLists.length > 100) publicLists.shift();
-          }
-        }
-
-        await bot.sendMessage(chatId, `✅ Nuevas listas públicas generadas.\nUsa /listaspublicas para verlas.${adminMessage}`, {
-          parse_mode: 'Markdown',
-          message_thread_id: threadId
-        });
+      if (error) {
+        logAction('insert_public_list_error', { url: source.url, error: error.message });
+        continue;
       }
 
-      // Comando /historial
-      bot.onText(/\/historial/, async (msg) => {
-        const chatId = msg.chat.id;
-        const threadId = msg.message_thread_id || '0';
-        const userId = msg.from.id;
-        const userMention = getUserMention(msg.from);
-        const allowedThreadId = getAllowedThreadId(chatId);
+      publicLists.push(source.url);
+      if (publicLists.length > 100) publicLists.shift();
+    }
+  }
 
-        if (!isAllowedContext(chatId, threadId)) return;
+  await bot.sendMessage(chatId, `✅ Nuevas listas públicas generadas.\nUsa /listaspublicas para verlas.${adminMessage}`, {
+    parse_mode: 'Markdown',
+    message_thread_id: threadId
+  });
+}
 
-        if (!userHistory[userId] || userHistory[userId].length === 0) {
-          await bot.sendMessage(chatId, `📜 ${userMention}, no tienes verificaciones recientes.${adminMessage}`, {
-            parse_mode: 'Markdown',
-            message_thread_id: allowedThreadId,
-            ...mainMenu
-          });
-          return;
-        }
+// Comando /historial
+bot.onText(/\/historial/, async (msg) => {
+  const chatId = msg.chat.id;
+  const threadId = msg.message_thread_id || '0';
+  const userId = msg.from.id;
+  const userMention = getUserMention(msg.from);
+  const allowedThreadId = getAllowedThreadId(chatId);
 
-        let historyText = `📜 *Historial de verificaciones de ${userMention}*:\n\n`;
-        userHistory[userId].forEach((entry, index) => {
-          const timestamp = entry.timestamp.toLocaleString('es-ES', { timeZone: 'America/Mexico_City' });
-          historyText += `${index + 1}. 📅 ${timestamp} - [${escapeMarkdown(entry.url)}](${entry.url}) - ${entry.result.status}\n`;
-        });
-        historyText += adminMessage;
+  if (!isAllowedContext(chatId, threadId)) return;
 
-        await bot.sendMessage(chatId, historyText, {
-          parse_mode: 'Markdown',
-          message_thread_id: allowedThreadId,
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '⬅️ Regresar', callback_data: 'back_to_main' }]
-            ]
-          }
-        });
-      });
+  if (!userHistory[userId] || userHistory[userId].length === 0) {
+    await bot.sendMessage(chatId, `📜 ${userMention}, no tienes verificaciones recientes.${adminMessage}`, {
+      parse_mode: 'Markdown',
+      message_thread_id: allowedThreadId,
+      ...mainMenu
+    });
+    return;
+  }
 
-      // Programar la generación de listas públicas cada 6 horas
-      cron.schedule('0 */6 * * *', async () => {
-        try {
-          await generatePublicLists();
-        } catch (error) {
-          logAction('cron_generate_error', { error: error.message });
-        }
-      });
+  let historyText = `📜 *Historial de verificaciones de ${userMention}*:\n\n`;
+  userHistory[userId].forEach((entry, index) => {
+    const timestamp = entry.timestamp.toLocaleString('es-ES', { timeZone: 'America/Mexico_City' });
+    historyText += `${index + 1}. 📅 ${timestamp} - [${escapeMarkdown(entry.url)}](${entry.url}) - ${entry.result.status}\n`;
+  });
+  historyText += adminMessage;
 
-      // Manejo de errores generales
-      bot.on('polling_error', (error) => {
-        logAction('polling_error', { error: error.message });
-      });
+  await bot.sendMessage(chatId, historyText, {
+    parse_mode: 'Markdown',
+    message_thread_id: allowedThreadId,
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '⬅️ Regresar', callback_data: 'back_to_main' }]
+      ]
+    }
+  });
+});
 
-      bot.on('webhook_error', (error) => {
-        logAction('webhook_error', { error: error.message });
-      });
+// Programar la generación de listas públicas cada 6 horas
+cron.schedule('0 */6 * * *', async () => {
+  try {
+    await generatePublicLists();
+  } catch (error) {
+    logAction('cron_generate_error', { error: error.message });
+  }
+});
+
+// Manejo de errores generales
+bot.on('polling_error', (error) => {
+  logAction('polling_error', { error: error.message });
+});
+
+bot.on('webhook_error', (error) => {
+  logAction('webhook_error', { error: error.message });
+});
