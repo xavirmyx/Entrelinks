@@ -15,6 +15,12 @@ console.log('SUPABASE_KEY:', process.env.SUPABASE_KEY);
 console.log('BOT_TOKEN:', process.env.BOT_TOKEN);
 console.log('ADMIN_CHAT_ID:', process.env.ADMIN_CHAT_ID);
 
+// Validar que BOT_TOKEN esté definido
+if (!process.env.BOT_TOKEN) {
+  console.error('Error: BOT_TOKEN is not defined. Please set the BOT_TOKEN environment variable.');
+  process.exit(1); // Salir del proceso con un código de error
+}
+
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
