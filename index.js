@@ -1,202 +1,298 @@
-const TelegramBot = require('node-telegram-bot-api');
-const express = require('express');
-const cron = require('node-cron');
-const axios = require('axios');
-const { createClient } = require('@supabase/supabase-js');
-const xml2js = require('xml2js');
+import express from 'express';
+import { Telegraf } from 'telegraf';
+import { createClient } from '@supabase/supabase-js';
+import fetch from 'node-fetch';
+import dotenv from 'dotenv';
 
-// Token del bot y nombre
-const token = '7861676131:AAFLv4dBIFiHV1OYc8BJH2U8kWPal7lpBMQ';
-const bot = new TelegramBot(token);
-const botName = 'EntreCheck_iptv';
+dotenv.config();
 
-// Configuración de Express
 const app = express();
-const port = process.env.PORT || 10000;
+const bot = new Telegraf(process.env.BOT_TOKEN);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
 app.use(express.json());
+app.use(bot.webhookCallback('/bot' + process.env.BOT_TOKEN));
 
-// Webhook (usado en Render)
-const webhookUrl = 'https://entrelinks.onrender.com';
-
-// Configuración de Supabase
-const supabaseUrl = 'https://jxpdivtccnhsspvwfpdl.supabase.co';
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4cGRpdnRjY25oc3NwdndmcGRsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0MjY0NzUzNiwiZXhwIjoyMDU4MjIzNTM2fQ.Z74CydZxXmrM7W_qTZkdIWC22DHL_CS0qb_l5r_C3dA';
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-// IDs permitidos (solo el grupo de administradores)
-const ALLOWED_CHAT_IDS = [
-  { chatId: '-1002565012502', threadId: null, name: 'BotChecker_IPTV_ParaG' }
-];
-
-// Almacenar datos en memoria
-let userHistory = {};
-let userStates = {};
-let processedUpdates = new Set();
-let publicLists = [];
-
-// Mensaje fijo
-const adminMessage = '\n\n👨‍💼 *Equipo de Administración EntresHijos*';
-
-// Registrar logs
-function logAction(action, details) {
-  const timestamp = new Date().toLocaleString('es-ES');
-  console.log(`[${timestamp}] ${action}:`, details);
-}
-
-// Escapar caracteres para Markdown (actualizado para manejar más caracteres)
-function escapeMarkdown(text) {
-  return text.replace(/([_*[\]()~`>#+\-=|{}.!\\"])/g, '\\$1');
-}
-
-// Obtener mención del usuario
-function getUserMention(user) {
-  return user.username ? `@${escapeMarkdown(user.username)}` : escapeMarkdown(user.first_name);
-}
-
-// Animación de porcentaje
-async function showPercentageAnimation(chatId, threadId, messageId, baseText, totalSteps) {
-  for (let i = 0; i <= totalSteps; i++) {
-    const percentage = Math.round((i / totalSteps) * 100);
-    const barLength = 10;
-    const filled = Math.round((percentage / 100) * barLength);
-    const empty = barLength - filled;
-    const progressBar = '█'.repeat(filled) + '░'.repeat(empty);
-    try {
-      await bot.editMessageText(`${baseText}\nProgreso: [${progressBar}] ${percentage}%`, {
-        chat_id: chatId,
-        message_id: messageId,
-        message_thread_id: threadId === '0' ? undefined : threadId,
-        parse_mode: 'Markdown'
-      });
-    } catch (error) {
-      if (error.response?.status === 429) {
-        const retryAfter = error.response.data.parameters.retry_after || 1;
-        await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-        continue;
-      }
-      break;
-    }
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
-}
-
-// Configuración de axios para ignorar errores de SSL
-const axiosInstance = axios.create({
-  timeout: 15000,
-  httpsAgent: new (require('https').Agent)({
-    rejectUnauthorized: false
-  })
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor en puerto ${PORT}`);
+  bot.telegram.setWebhook(`https://entrelinks.onrender.com/bot${process.env.BOT_TOKEN}`)
+    .then(() => console.log(`[${new Date().toLocaleString()}] webhook_set: { url: 'https://entrelinks.onrender.com/bot${process.env.BOT_TOKEN}' }`));
 });
 
-// Reestructuración automática de la base de datos en Supabase
+// Fuentes de listas públicas
+const publicSources = [
+  { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'Spain' },
+  { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Spanish' },
+  { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' },
+  { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'Mexico' },
+  { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina' },
+];
+
+// Función para verificar si una tabla existe
+async function checkTableExists(table) {
+  try {
+    const { data, error } = await supabase.rpc('table_exists', { table_name: table });
+    if (error) throw error;
+    return data;
+  } catch (error) {
+    console.error(`[${new Date().toLocaleString()}] table_exists_error: { table: '${table}', error: '${error.message}' }`);
+    return false;
+  }
+}
+
+// Función para reestructurar la base de datos
 async function restructureDatabase() {
-  const requiredTables = {
-    'public_lists': {
-      columns: {
-        id: 'SERIAL PRIMARY KEY',
-        url: 'text not null',
-        type: 'text',
-        category: 'text',
-        status: 'text',
-        total_channels: 'integer',
-        expires_at: 'text',
-        last_checked: 'timestamp with time zone default now()'
-      }
+  const tables = [
+    {
+      name: 'public_lists',
+      createQuery: `
+        CREATE TABLE public.public_lists (
+          id SERIAL PRIMARY KEY,
+          url TEXT NOT NULL,
+          type TEXT NOT NULL,
+          category TEXT NOT NULL,
+          status TEXT NOT NULL,
+          total_channels INTEGER,
+          expires_at TEXT,
+          last_checked TIMESTAMP DEFAULT NOW()
+        );
+        CREATE INDEX idx_public_lists_last_checked ON public.public_lists (last_checked);
+      `
     },
-    'votes': {
-      columns: {
-        id: 'SERIAL PRIMARY KEY',
-        list_id: 'integer references public_lists(id) on delete cascade',
-        user_id: 'text not null',
-        vote_type: 'text',
-        created_at: 'timestamp with time zone default now()'
-      }
+    {
+      name: 'votes',
+      createQuery: `
+        CREATE TABLE public.votes (
+          id SERIAL PRIMARY KEY,
+          list_id INTEGER REFERENCES public.public_lists(id) ON DELETE CASCADE,
+          user_id TEXT NOT NULL,
+          vote_type TEXT NOT NULL,
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+      `
     },
-    'mirrors': {
-      columns: {
-        id: 'SERIAL PRIMARY KEY',
-        original_url: 'text not null',
-        mirror_url: 'text not null',
-        status: 'text default \'Pending\'',
-        last_checked: 'timestamp with time zone default now()'
-      }
+    {
+      name: 'mirrors',
+      createQuery: `
+        CREATE TABLE public.mirrors (
+          id SERIAL PRIMARY KEY,
+          original_url TEXT NOT NULL,
+          mirror_url TEXT NOT NULL,
+          status TEXT DEFAULT 'Pending',
+          last_checked TIMESTAMP DEFAULT NOW()
+        );
+      `
     }
-  };
+  ];
 
-  for (const [tableName, schema] of Object.entries(requiredTables)) {
-    try {
-      // Verificar si la tabla existe usando una consulta SQL directa
-      const checkTableQuery = `
-        SELECT table_name 
-        FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = $1
-      `;
-      const { data: tableExists, error: tableExistsError } = await supabase.rpc('execute_sql', {
-        sql: checkTableQuery,
-        params: [tableName]
-      });
-
-      if (tableExistsError) {
-        logAction('table_exists_error', { table: tableName, error: tableExistsError.message });
-        throw tableExistsError;
+  for (const table of tables) {
+    const exists = await checkTableExists(table.name);
+    if (!exists) {
+      try {
+        const { error } = await supabase.rpc('execute_sql', { sql: table.createQuery });
+        if (error) throw error;
+        console.log(`[${new Date().toLocaleString()}] table_created: { table: '${table.name}' }`);
+      } catch (error) {
+        console.error(`[${new Date().toLocaleString()}] database_restructure_error: { table: '${table.name}', error: '${error.message}' }`);
       }
-
-      if (!tableExists || tableExists.length === 0) {
-        // Crear la tabla si no existe
-        const columnDefs = Object.entries(schema.columns).map(([col, def]) => `${col} ${def}`).join(', ');
-        const createTableQuery = `CREATE TABLE public.${tableName} (${columnDefs});`;
-        const { error: createError } = await supabase.rpc('execute_sql', { sql: createTableQuery });
-        if (createError) {
-          logAction('create_table_error', { table: tableName, error: createError.message });
-          throw createError;
-        }
-        logAction('table_created', { table: tableName });
-      } else {
-        // Verificar y corregir columnas
-        const checkColumnsQuery = `
-          SELECT column_name 
-          FROM information_schema.columns 
-          WHERE table_schema = 'public' 
-          AND table_name = $1
-        `;
-        const { data: columns, error: colError } = await supabase.rpc('execute_sql', {
-          sql: checkColumnsQuery,
-          params: [tableName]
-        });
-
-        if (colError) {
-          logAction('get_columns_error', { table: tableName, error: colError.message });
-          throw colError;
-        }
-
-        const existingColumns = columns.map(col => col.column_name);
-        for (const [colName, colDef] of Object.entries(schema.columns)) {
-          if (!existingColumns.includes(colName)) {
-            const addColumnQuery = `ALTER TABLE public.${tableName} ADD COLUMN ${colName} ${colDef.split(' ').slice(1).join(' ')};`;
-            const { error: addColError } = await supabase.rpc('execute_sql', { sql: addColumnQuery });
-            if (addColError) {
-              logAction('add_column_error', { table: tableName, column: colName, error: addColError.message });
-              throw addColError;
-            }
-            logAction('column_added', { table: tableName, column: colName });
-          }
-        }
-      }
-    } catch (error) {
-      // Solo registrar el error en los logs, no enviar a Telegram
-      logAction('database_restructure_error', { table: tableName, error: error.message });
     }
   }
 }
 
-// Inicialización del bot
-async function initializeBot() {
-  await restructureDatabase();
-  logAction('bot_initialized', { status: 'success' });
-  // Forzar la generación de listas públicas al iniciar
-  await generatePublicLists();
+// Función para verificar una lista M3U
+async function checkM3U(url) {
+  console.log(`[${new Date().toLocaleString()}] check_start: { url: '${url}' }`);
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return { status: 'Failed', totalChannels: 0, expiresAt: 'Unknown' };
+    const text = await response.text();
+    const channels = (text.match(/#EXTINF/g) || []).length;
+    console.log(`[${new Date().toLocaleString()}] check_m3u_success: { url: '${url}', channels: ${channels} }`);
+    return { status: 'Active', totalChannels: channels, expiresAt: 'Unknown' };
+  } catch (error) {
+    console.error(`[${new Date().toLocaleString()}] check_m3u_error: { url: '${url}', error: '${error.message}' }`);
+    return { status: 'Failed', totalChannels: 0, expiresAt: 'Unknown' };
+  }
 }
+
+// Función para generar listas públicas
+async function generatePublicLists() {
+  const chatId = process.env.ADMIN_CHAT_ID;
+  await bot.telegram.sendMessage(chatId, '⏳ Generando nuevas listas públicas...');
+  for (const source of publicSources) {
+    const result = await checkM3U(source.url);
+    const { error } = await supabase.from('public_lists').insert({
+      url: source.url,
+      type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U',
+      category: source.category,
+      status: result.status,
+      total_channels: result.totalChannels || 0,
+      expires_at: result.expiresAt || 'Desconocida',
+      last_checked: new Date().toISOString()
+    });
+    if (error) console.error(`[${new Date().toLocaleString()}] insert_public_list_error: { url: '${source.url}', error: '${error.message}' }`);
+  }
+  await bot.telegram.sendMessage(chatId, '✅ Listas públicas generadas con éxito.');
+}
+
+// Comando /start
+bot.command('start', async (ctx) => {
+  await ctx.reply('👋 ¡Bienvenido a Entrelinks! Usa /iptv para ver las opciones disponibles.');
+});
+
+// Comando /iptv
+bot.command('iptv', async (ctx) => {
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: '📋 Generar Listas', callback_data: 'generate_lists' }],
+      [{ text: '📜 Listas Públicas', callback_data: 'public_lists' }],
+      [{ text: '🔍 Buscar Espejo', callback_data: 'search_mirror' }],
+    ]
+  };
+  await ctx.reply('📺 **Entrelinks IPTV** 📺\nSelecciona una opción:', { reply_markup: keyboard });
+});
+
+// Manejar acciones de los botones
+bot.action('generate_lists', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply('⏳ Generando listas públicas...');
+  await generatePublicLists();
+});
+
+bot.action('public_lists', async (ctx) => {
+  await ctx.answerCbQuery();
+  await handlePublicLists(ctx);
+});
+
+bot.action('search_mirror', async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply('🔍 Por favor, envía la URL de la lista para buscar un espejo (ejemplo: https://example.com/list.m3u):');
+  ctx.session = { awaitingMirrorUrl: true };
+});
+
+// Comando /generar
+bot.command('generar', async (ctx) => {
+  await ctx.reply('⏳ Generando listas públicas...');
+  await generatePublicLists();
+});
+
+// Comando /listaspublicas
+async function handlePublicLists(ctx) {
+  const lists = await supabase
+    .from('public_lists')
+    .select('id, url, category, total_channels, last_checked')
+    .order('last_checked', { ascending: false })
+    .limit(10);
+
+  if (!lists.data || lists.data.length === 0) {
+    await ctx.reply('📭 No hay listas públicas disponibles.');
+    return;
+  }
+
+  const messageLines = ['📜 **Listas Públicas** 📜'];
+  const keyboardButtons = [];
+
+  for (const list of lists.data) {
+    const votes = await supabase
+      .from('votes')
+      .select('vote_type')
+      .eq('list_id', list.id);
+
+    const upvotes = votes.data?.filter(v => v.vote_type === 'upvote').length || 0;
+    const downvotes = votes.data?.filter(v => v.vote_type === 'downvote').length || 0;
+
+    messageLines.push(`\n📋 **${list.category}** (${list.url})`);
+    messageLines.push(`📺 Canales: ${list.total_channels} | 👍 ${upvotes} | 👎 ${downvotes}`);
+
+    keyboardButtons.push([
+      { text: `👍 ${upvotes}`, callback_data: `vote_up_${list.id}` },
+      { text: `👎 ${downvotes}`, callback_data: `vote_down_${list.id}` }
+    ]);
+  }
+
+  const keyboard = { inline_keyboard: keyboardButtons };
+  const messageText = messageLines.join('\n');
+
+  // Si el mensaje ya existe, editarlo solo si ha cambiado
+  if (ctx.update.callback_query) {
+    const currentMessage = ctx.update.callback_query.message.text;
+    if (currentMessage !== messageText) {
+      await ctx.editMessageText(messageText, { reply_markup: keyboard, parse_mode: 'Markdown' });
+    } else {
+      await ctx.answerCbQuery(); // Evitar el error "message is not modified"
+    }
+  } else {
+    await ctx.reply(messageText, { reply_markup: keyboard, parse_mode: 'Markdown' });
+  }
+}
+
+bot.command('listaspublicas', handlePublicLists);
+
+// Manejar votaciones
+bot.action(/vote_(up|down)_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const [, voteType, listId] = ctx.match;
+  const userId = ctx.from.id.toString();
+
+  // Verificar si el usuario ya votó
+  const existingVote = await supabase
+    .from('votes')
+    .select('vote_type')
+    .eq('list_id', listId)
+    .eq('user_id', userId)
+    .single();
+
+  if (existingVote.data) {
+    if (existingVote.data.vote_type === voteType) {
+      await ctx.reply('⚠️ Ya has votado de esta manera.');
+      return;
+    } else {
+      // Actualizar el voto existente
+      await supabase
+        .from('votes')
+        .update({ vote_type: voteType })
+        .eq('list_id', listId)
+        .eq('user_id', userId);
+    }
+  } else {
+    // Insertar un nuevo voto
+    await supabase
+      .from('votes')
+      .insert({ list_id: listId, user_id: userId, vote_type: voteType });
+  }
+
+  // Actualizar el panel de votación
+  await handlePublicLists(ctx);
+});
+
+// Manejar URLs para buscar espejos
+bot.on('text', async (ctx) => {
+  if (ctx.session?.awaitingMirrorUrl) {
+    const url = ctx.message.text.trim();
+    ctx.session.awaitingMirrorUrl = false;
+
+    await ctx.reply(`🔍 Buscando espejo para: ${url}`);
+    const { data: existingMirror } = await supabase
+      .from('mirrors')
+      .select('mirror_url')
+      .eq('original_url', url)
+      .single();
+
+    if (existingMirror) {
+      await ctx.reply(`✅ Espejo encontrado: ${existingMirror.mirror_url}`);
+    } else {
+      await ctx.reply('❌ No se encontró un espejo para esta URL.');
+    }
+  }
+});
+
+// Inicializar el bot
+(async () => {
+  await restructureDatabase();
+  console.log(`[${new Date().toLocaleString()}] bot_initialized: { status: 'success' }`);
+  await generatePublicLists();
+})();
 
 // Ruta webhook (para Render)
 app.post(`/bot${token}`, (req, res) => {
