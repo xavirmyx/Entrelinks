@@ -1119,106 +1119,122 @@ async function handleMirror(chatId, threadId, url, userId, userMention) {
   });
 }
 
-// Función para generar listas públicas
-async function generatePublicLists() {
-  const chatId = ALLOWED_CHAT_IDS[0].chatId;
-  const threadId = getAllowedThreadId(chatId);
-  await bot.sendMessage(chatId, `⏳ Generando nuevas listas públicas...${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId
-  });
+      // Función para generar listas públicas
+      async function generatePublicLists() {
+        const chatId = ALLOWED_CHAT_IDS[0].chatId;
+        const threadId = getAllowedThreadId(chatId);
+        await bot.sendMessage(chatId, `⏳ Generando nuevas listas públicas...${adminMessage}`, {
+          parse_mode: 'Markdown',
+          message_thread_id: threadId
+        });
 
-  const staticSources = [
-    { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España' },
-    { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español' },
-    { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes' },
-    { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General' },
-    { url: 'https://m3u.cl/lista.m3u', category: 'General' },
-    { url: 'https://iptv-org.github.io/iptv/categories/movies.m3u', category: 'Películas' },
-    { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias' }
-  ];
+        const staticSources = [
+          { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España' },
+          { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español' },
+          { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' },
+          { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México' },
+          { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina' },
+          { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA' },
+          { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK' },
+          { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes' },
+          { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General' },
+          { url: 'https://m3u.cl/lista.m3u', category: 'General' },
+          { url: 'https://iptv-org.github.io/iptv/categories/movies.m3u', category: 'Películas' },
+          { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias' }
+        ];
 
-  const dynamicSources = [];
-  try {
-    const iptvCatResponse = await axiosInstance.get('https://iptvcat.com/spain/');
-    const iptvCatLinks = iptvCatResponse.data.match(/(http[s]?:\/\/[^\s]+\.m3u)/g) || [];
-    dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)' })));
-  } catch (error) {
-    logAction('iptvcat_error', { error: error.message });
-  }
+        const dynamicSources = [];
+        try {
+          const iptvCatResponse = await axiosInstance.get('https://iptvcat.com/spain/');
+          const iptvCatLinks = iptvCatResponse.data.match(/(http[s]?:\/\/[^\s]+\.m3u)/g) || [];
+          dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)' })));
+        } catch (error) {
+          logAction('iptvcat_error', { error: error.message });
+        }
 
-  const allSources = [...staticSources, ...dynamicSources].filter(source => !publicLists.includes(source.url));
-  const sourcesToProcess = allSources.slice(0, 5);
+        const allSources = [...staticSources, ...dynamicSources].filter(source => !publicLists.includes(source.url));
+        const sourcesToProcess = allSources.slice(0, 5);
 
-  for (const source of sourcesToProcess) {
-    const result = await checkIPTVList(source.url, 'cron');
-    if (result.status === 'Activa') {
-      const { error } = await supabase.from('public_lists').insert({
-        url: source.url,
-        type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U',
-        category: source.category,
-        status: result.status,
-        total_channels: result.totalChannels || 0,
-        expires_at: result.expiresAt || 'Desconocida',
-        last_checked: new Date().toISOString()
-      });
-      if (error) {
-        logAction('insert_public_list_error', { url: source.url, error: error.message });
-        continue;
+        for (const source of sourcesToProcess) {
+          const result = await checkIPTVList(source.url, 'cron');
+          if (result.status === 'Activa') {
+            const { error } = await supabase.from('public_lists').insert({
+              url: source.url,
+              type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U',
+              category: source.category,
+              status: result.status,
+              total_channels: result.totalChannels || 0,
+              expires_at: result.expiresAt || 'Desconocida',
+              last_checked: new Date().toISOString()
+            });
+
+            if (error) {
+              logAction('insert_public_list_error', { url: source.url, error: error.message });
+              continue;
+            }
+
+            publicLists.push(source.url);
+            if (publicLists.length > 100) publicLists.shift();
+          }
+        }
+
+        await bot.sendMessage(chatId, `✅ Nuevas listas públicas generadas.\nUsa /listaspublicas para verlas.${adminMessage}`, {
+          parse_mode: 'Markdown',
+          message_thread_id: threadId
+        });
       }
-      publicLists.push(source.url);
-      if (publicLists.length > 100) publicLists.shift();
-    }
-  }
 
-  await bot.sendMessage(chatId, `✅ Nuevas listas públicas generadas. Usa /listaspublicas para verlas.${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId
-  });
-}
+      // Comando /historial
+      bot.onText(/\/historial/, async (msg) => {
+        const chatId = msg.chat.id;
+        const threadId = msg.message_thread_id || '0';
+        const userId = msg.from.id;
+        const userMention = getUserMention(msg.from);
+        const allowedThreadId = getAllowedThreadId(chatId);
 
-// Verificación programada de espejos (cada 6 horas)
-cron.schedule('0 */6 * * *', async () => {
-  const { data: mirrors } = await supabase.from('mirrors').select('*');
-  if (!mirrors) return;
+        if (!isAllowedContext(chatId, threadId)) return;
 
-  for (const mirror of mirrors) {
-    const result = await checkIPTVList(mirror.mirror_url, 'cron');
-    await supabase
-      .from('mirrors')
-      .update({ status: result.status === 'Activa' ? 'Active' : 'Inactive', last_checked: new Date().toISOString() })
-      .eq('id', mirror.id);
+        if (!userHistory[userId] || userHistory[userId].length === 0) {
+          await bot.sendMessage(chatId, `📜 ${userMention}, no tienes verificaciones recientes.${adminMessage}`, {
+            parse_mode: 'Markdown',
+            message_thread_id: allowedThreadId,
+            ...mainMenu
+          });
+          return;
+        }
 
-    if (result.status !== 'Activa') {
-      const chatId = ALLOWED_CHAT_IDS[0].chatId;
-      const threadId = getAllowedThreadId(chatId);
-      await bot.sendMessage(chatId, `📢 El espejo ${escapeMarkdown(mirror.mirror_url)} para ${escapeMarkdown(mirror.original_url)} está inactivo.${adminMessage}`, {
-        parse_mode: 'Markdown',
-        message_thread_id: threadId
+        let historyText = `📜 *Historial de verificaciones de ${userMention}*:\n\n`;
+        userHistory[userId].forEach((entry, index) => {
+          const timestamp = entry.timestamp.toLocaleString('es-ES', { timeZone: 'America/Mexico_City' });
+          historyText += `${index + 1}. 📅 ${timestamp} - [${escapeMarkdown(entry.url)}](${entry.url}) - ${entry.result.status}\n`;
+        });
+        historyText += adminMessage;
+
+        await bot.sendMessage(chatId, historyText, {
+          parse_mode: 'Markdown',
+          message_thread_id: allowedThreadId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '⬅️ Regresar', callback_data: 'back_to_main' }]
+            ]
+          }
+        });
       });
-    }
-  }
-}, { scheduled: true, timezone: 'Europe/Madrid' });
 
-// Generar listas públicas cada 4 horas
-cron.schedule('0 */4 * * *', async () => {
-  logAction('cron_generate_public_lists_start', {});
-  await generatePublicLists();
-  logAction('cron_generate_public_lists_end', {});
-}, { scheduled: true, timezone: 'Europe/Madrid' });
+      // Programar la generación de listas públicas cada 6 horas
+      cron.schedule('0 */6 * * *', async () => {
+        try {
+          await generatePublicLists();
+        } catch (error) {
+          logAction('cron_generate_error', { error: error.message });
+        }
+      });
 
-// Mantener servidor activo (para UptimeRobot)
-setInterval(() => {
-  axios.get('https://entrelinks.onrender.com')
-    .then(() => logAction('keep_alive', { status: 'success' }))
-    .catch(error => logAction('keep_alive_error', { error: error.message }));
-}, 5 * 60 * 1000);
+      // Manejo de errores generales
+      bot.on('polling_error', (error) => {
+        logAction('polling_error', { error: error.message });
+      });
 
-console.log(`🚀 ${botName} iniciado correctamente`);
-
-module.exports = bot;
+      bot.on('webhook_error', (error) => {
+        logAction('webhook_error', { error: error.message });
+      });
