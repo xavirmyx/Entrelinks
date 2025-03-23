@@ -22,7 +22,16 @@ if (!process.env.BOT_TOKEN) {
 }
 
 const app = express();
-const bot = new Telegraf(process.env.BOT_TOKEN);
+let bot;
+
+try {
+  bot = new Telegraf(process.env.BOT_TOKEN);
+  console.log('Bot initialized successfully');
+} catch (error) {
+  console.error('Error initializing Telegraf bot:', error.message);
+  process.exit(1); // Salir del proceso con un código de error
+}
+
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // Configuración de variables globales
@@ -388,10 +397,16 @@ function formatResponse(msg, result, originalUrl) {
 async function generatePublicLists() {
   const chatId = ALLOWED_CHAT_IDS[0].chatId;
   const threadId = getAllowedThreadId(chatId);
-  await bot.sendMessage(chatId, `⏳ Generando nuevas listas públicas...${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId
-  });
+
+  try {
+    await bot.sendMessage(chatId, `⏳ Generando nuevas listas públicas...${adminMessage}`, {
+      parse_mode: 'Markdown',
+      message_thread_id: threadId
+    });
+  } catch (error) {
+    console.error('Error sending message in generatePublicLists:', error.message);
+    return; // Salir de la función si no se puede enviar el mensaje
+  }
 
   const sourcesToProcess = publicSources.slice(0, 5);
 
@@ -420,10 +435,14 @@ async function generatePublicLists() {
     }
   }
 
-  await bot.sendMessage(chatId, `✅ Nuevas listas públicas generadas.\nUsa /listaspublicas para verlas.${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: threadId
-  });
+  try {
+    await bot.sendMessage(chatId, `✅ Nuevas listas públicas generadas.\nUsa /listaspublicas para verlas.${adminMessage}`, {
+      parse_mode: 'Markdown',
+      message_thread_id: threadId
+    });
+  } catch (error) {
+    console.error('Error sending completion message in generatePublicLists:', error.message);
+  }
 }
 
 // Función para manejar listas públicas
@@ -1040,6 +1059,7 @@ bot.on('webhook_error', (error) => {
   app.listen(PORT, () => {
     console.log(`🚀 Servidor en puerto ${PORT}`);
     bot.telegram.setWebhook(`${WEBHOOK_URL}/bot${process.env.BOT_TOKEN}`)
-      .then(() => logAction('webhook_set', { url: `${WEBHOOK_URL}/bot${process.env.BOT_TOKEN}` }));
+      .then(() => logAction('webhook_set', { url: `${WEBHOOK_URL}/bot${process.env.BOT_TOKEN}` }))
+      .catch(error => console.error('Error setting webhook:', error.message));
   });
 })();
