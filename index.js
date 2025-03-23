@@ -20,7 +20,7 @@ const webhookUrl = 'https://entrelinks.onrender.com';
 
 // Configuración de Supabase
 const supabaseUrl = 'https://jxpdivtccnhsspvwfpdl.supabase.co';
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4cGRpdnRjY25oc3NwdndmcGRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDI2NDc1MzYsImV4cCI6MjA1ODIyMzUzNn0.oVV31TUxJeCEZZByLb5gsvl9vpme8XZ9XnOKoaZFJKI'; // Reemplaza con tu clave anónima
+const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4cGRpdnRjY25oc3NwdndmcGRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDI2NDc1MzYsImV4cCI6MjA1ODIyMzUzNn0.oVV31TUxJeCEZZByLb5gsvl9vpme8XZ9XnOKoaZFJKI';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // IDs permitidos
@@ -29,12 +29,11 @@ const ALLOWED_CHAT_IDS = [
   { chatId: '-1002565012502', threadId: null, name: 'BotChecker_IPTV_ParaG' }
 ];
 
-// Almacenar datos
+// Almacenar datos en memoria
 let userHistory = {};
 let userStates = {};
-let userFavorites = {};
-let processedUpdates = new Set(); // Para evitar procesar actualizaciones duplicadas
-let publicLists = []; // Lista temporal para evitar repeticiones
+let processedUpdates = new Set();
+let publicLists = [];
 
 // Mensaje fijo
 const adminMessage = '\n\n👨‍💼 *Equipo de Administración EntresHijos*';
@@ -78,7 +77,7 @@ async function showPercentageAnimation(chatId, threadId, messageId, baseText, to
       }
       break;
     }
-    await new Promise(resolve => setTimeout(resolve, 500)); // 500ms entre actualizaciones
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
 }
 
@@ -90,18 +89,75 @@ const axiosInstance = axios.create({
   })
 });
 
-// Inicializar Supabase (ya no es necesario crear tablas aquí, lo hicimos manualmente)
-async function initializeSupabase() {
-  try {
-    const { data, error } = await supabase
-      .from('public_lists')
-      .select('*')
-      .limit(1);
-    if (error) throw error;
-    logAction('supabase_table_check', { table: 'public_lists', status: 'exists' });
-  } catch (error) {
-    logAction('supabase_init_error', { error: error.message });
+// Reestructuración automática de la base de datos en Supabase
+async function restructureDatabase() {
+  const requiredTables = {
+    'public_lists': {
+      columns: {
+        id: 'uuid default uuid_generate_v4() primary key',
+        url: 'text not null',
+        type: 'text',
+        category: 'text',
+        status: 'text',
+        total_channels: 'integer',
+        expires_at: 'text',
+        last_checked: 'timestamp with time zone default now()'
+      }
+    },
+    'votes': {
+      columns: {
+        id: 'uuid default uuid_generate_v4() primary key',
+        list_id: 'uuid references public_lists(id)',
+        user_id: 'bigint',
+        vote_type: 'text',
+        created_at: 'timestamp with time zone default now()'
+      }
+    },
+    'mirrors': {
+      columns: {
+        id: 'uuid default uuid_generate_v4() primary key',
+        original_url: 'text not null',
+        mirror_url: 'text not null',
+        status: 'text default \'Pending\'',
+        last_checked: 'timestamp with time zone default now()'
+      }
+    }
+  };
+
+  for (const [tableName, schema] of Object.entries(requiredTables)) {
+    try {
+      // Verificar si la tabla existe
+      const { data, error } = await supabase.rpc('table_exists', { table_name: tableName });
+      if (error) throw error;
+
+      if (!data) {
+        // Crear la tabla si no existe
+        const columnDefs = Object.entries(schema.columns).map(([col, def]) => `${col} ${def}`).join(', ');
+        await supabase.rpc('execute_sql', { sql: `CREATE TABLE ${tableName} (${columnDefs});` });
+        logAction('table_created', { table: tableName });
+      } else {
+        // Verificar y corregir columnas
+        const { data: columns, error: colError } = await supabase.rpc('get_table_columns', { table_name: tableName });
+        if (colError) throw colError;
+
+        const existingColumns = columns.map(col => col.column_name);
+        for (const [colName, colDef] of Object.entries(schema.columns)) {
+          if (!existingColumns.includes(colName)) {
+            await supabase.rpc('execute_sql', { sql: `ALTER TABLE ${tableName} ADD COLUMN ${colName} ${colDef.split(' ').slice(1).join(' ')};` });
+            logAction('column_added', { table: tableName, column: colName });
+          }
+        }
+      }
+    } catch (error) {
+      logAction('database_restructure_error', { table: tableName, error: error.message });
+    }
   }
+}
+
+// Inicialización del bot
+async function initializeBot() {
+  await restructureDatabase();
+  logAction('bot_initialized', { status: 'success' });
 }
 
 // Ruta webhook (para Render)
@@ -112,9 +168,7 @@ app.post(`/bot${token}`, (req, res) => {
     return;
   }
   processedUpdates.add(updateId);
-  if (processedUpdates.size > 1000) {
-    processedUpdates.clear(); // Limpiar para evitar crecimiento infinito
-  }
+  if (processedUpdates.size > 1000) processedUpdates.clear();
   logAction('webhook_received', { update: req.body });
   bot.processUpdate(req.body);
   res.sendStatus(200);
@@ -126,7 +180,7 @@ app.get('/', (req, res) => res.send(`${botName} is running`));
 app.listen(port, async () => {
   console.log(`🚀 Servidor en puerto ${port}`);
   await setWebhookWithRetry();
-  await initializeSupabase();
+  await initializeBot();
 });
 
 // Configurar webhook con reintentos
@@ -181,13 +235,12 @@ function isValidIPTVFormat(url) {
   );
 }
 
-// Verificar lista IPTV (soporte ampliado para más formatos)
+// Verificar lista IPTV
 async function checkIPTVList(url, userId) {
   logAction('check_start', { url });
   try {
     url = ensurePort(url.trim());
 
-    // 1. Soporte para listas Xtream Codes
     if (url.includes('get.php')) {
       const [, params] = url.split('?');
       const queryParams = Object.fromEntries(new URLSearchParams(params));
@@ -215,7 +268,6 @@ async function checkIPTVList(url, userId) {
       };
     }
 
-    // 2. Soporte para listas M3U/M3U8 (con o sin autenticación)
     if (url.endsWith('.m3u') || url.endsWith('.m3u8') || url.includes('playlist')) {
       let response;
       try {
@@ -225,9 +277,7 @@ async function checkIPTVList(url, userId) {
           const urlObj = new URL(url);
           const username = urlObj.username || 'guest';
           const password = urlObj.password || 'guest';
-          response = await axiosInstance.get(url, {
-            auth: { username, password }
-          });
+          response = await axiosInstance.get(url, { auth: { username, password } });
         } else {
           throw error;
         }
@@ -272,7 +322,6 @@ async function checkIPTVList(url, userId) {
       };
     }
 
-    // 3. Soporte para enlaces directos (TS, HLS, etc.)
     if (url.endsWith('.ts') || url.includes('hls') || url.includes('stream')) {
       const response = await axiosInstance.head(url);
       logAction('check_direct_success', { url });
@@ -285,7 +334,6 @@ async function checkIPTVList(url, userId) {
       };
     }
 
-    // 4. Soporte para listas JSON
     if (url.endsWith('.json')) {
       const response = await axiosInstance.get(url);
       const data = response.data;
@@ -328,7 +376,6 @@ async function checkIPTVList(url, userId) {
       };
     }
 
-    // 5. Soporte para listas XML (usando xml2js)
     if (url.endsWith('.xml')) {
       const response = await axiosInstance.get(url);
       const xmlData = response.data;
@@ -374,19 +421,13 @@ async function checkIPTVList(url, userId) {
   } catch (error) {
     let errorMsg;
     if (error.response) {
-      if (error.response.status === 403) {
-        errorMsg = 'Acceso denegado (403): El servidor rechazó la solicitud, puede estar protegido.';
-      } else if (error.response.status === 404) {
-        errorMsg = 'No encontrado (404): El enlace no está disponible.';
-      } else {
-        errorMsg = `Error del servidor (${error.response.status}): ${error.response.statusText}`;
-      }
+      if (error.response.status === 403) errorMsg = 'Acceso denegado (403)';
+      else if (error.response.status === 404) errorMsg = 'No encontrado (404)';
+      else errorMsg = `Error del servidor (${error.response.status})`;
     } else if (error.message.includes('timeout')) {
-      errorMsg = 'Tiempo agotado: El servidor no respondió a tiempo.';
-    } else if (error.message.includes('EPROTO')) {
-      errorMsg = 'Error de conexión SSL: Problema con el certificado del servidor.';
+      errorMsg = 'Tiempo agotado';
     } else {
-      errorMsg = `Error al verificar: ${error.message}`;
+      errorMsg = `Error: ${error.message}`;
     }
     logAction('check_error', { url, error: errorMsg });
     return { type: 'Desconocido', status: 'Error', error: errorMsg, server: url.split('/').slice(0, 3).join('/'), expiresAt: 'Desconocida' };
@@ -398,22 +439,15 @@ function formatResponse(msg, result, originalUrl) {
   const timestamp = new Date().toLocaleString('es-ES', { timeZone: 'America/Mexico_City' });
   const userMention = getUserMention(msg.from);
 
-  let messageText = result.error ? `Error: ${escapeMarkdown(result.error)}` 
-    : result.status === 'Activa' ? '✅ Lista activa y funcionando.' 
+  let messageText = result.error ? `Error: ${escapeMarkdown(result.error)}`
+    : result.status === 'Activa' ? '✅ Lista activa y funcionando.'
     : '❌ Lista no activa actualmente.';
 
-  const combo = result.username && result.password 
-    ? `${escapeMarkdown(result.username)}:${escapeMarkdown(result.password)}` 
+  const combo = result.username && result.password
+    ? `${escapeMarkdown(result.username)}:${escapeMarkdown(result.password)}`
     : 'No disponible';
 
   const serverReal = result.type === 'Xtream Codes' ? result.server : result.server;
-
-  let serverRealLink = serverReal;
-  try {
-    serverRealLink = encodeURI(serverReal);
-  } catch (e) {
-    serverRealLink = serverReal;
-  }
 
   const response = `✨ Hola ${userMention}, aquí tienes los detalles de tu lista IPTV ✨\n\n` +
     `📅 *Fecha y hora*: ${timestamp}\n` +
@@ -424,26 +458,30 @@ function formatResponse(msg, result, originalUrl) {
     `⏰ *Expira*: ${result.expiresAt || 'No disponible'}\n` +
     `🔗 *Conexiones*: ${result.activeConnections !== undefined ? `${result.activeConnections}/${result.maxConnections}` : 'No disponible'}\n` +
     `📺 *Canales*: ${result.totalChannels || 0}\n` +
-    `🌐 *Servidor Real*: [${escapeMarkdown(serverReal)}](${serverRealLink})\n` +
+    `🌐 *Servidor Real*: [${escapeMarkdown(serverReal)}](${serverReal})\n` +
     `⏲ *Zona horaria*: ${result.timezone || 'Desconocida'}\n\n` +
     `🚀 *${botName} - Verificación Profesional y Gratuita*${adminMessage}`;
 
   return { text: response };
 }
 
-// Menú principal
+// Menú principal con botones
 const mainMenu = {
   reply_markup: {
     inline_keyboard: [
       [
         { text: '🔎 Verificar Lista', callback_data: 'check' },
-        { text: 'ℹ️ Ayuda', callback_data: 'guia' }
+        { text: '🎁 Generar Listas', callback_data: 'generate' }
+      ],
+      [
+        { text: '📚 Listas Públicas', callback_data: 'public_lists' },
+        { text: '🪞 Buscar Espejo', callback_data: 'mirror' }
       ]
     ]
   }
 };
 
-// Manejo de botones (incluye votación)
+// Manejo de botones
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const threadId = query.message.message_thread_id || '0';
@@ -467,31 +505,17 @@ bot.on('callback_query', async (query) => {
         message_thread_id: allowedThreadId,
         parse_mode: 'Markdown'
       });
-    } else if (query.data === 'guia') {
-      const helpMessage = `🌟 *Bienvenido a ${botName}, ${userMention}!* 🌟\n\n` +
-        `👋 Somos un bot profesional y gratuito exclusivo para *EntresHijos*, diseñado para gestionar y verificar listas IPTV de forma sencilla y eficiente.\n\n` +
-        `📋 *Comandos disponibles*:\n` +
-        `- *🔍 /guia* - Muestra esta guía de uso.\n` +
-        `- *💾 /save [nombre]* - Guarda la última lista verificada con un nombre.\n` +
-        `- *📜 /baul* - Lista todas tus listas guardadas.\n` +
-        `- *✅ /registro* - Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
-        `- *🎁 /generar* - Obtiene listas IPTV gratuitas verificadas de múltiples fuentes.\n` +
-        `- *📚 /listaspublicas* - Muestra las listas públicas más recientes con votación.\n\n` +
-        `🔧 *Cómo usar el bot*:\n` +
-        `1️⃣ Usa los botones o envía un enlace IPTV válido.\n` +
-        `2️⃣ Recibe un informe detallado al instante.\n\n` +
-        `📡 *Formatos compatibles*:\n` +
-        `- *Xtream*: \`http://server.com:80/get.php?username=xxx&password=yyy\`\n` +
-        `- *M3U/M3U8*: \`http://server.com:80/playlist.m3u\`\n` +
-        `- *TS/HLS*: \`http://server.com:80/stream.ts\`\n` +
-        `- *JSON*: \`http://server.com:80/list.json\`\n` +
-        `- *XML*: \`http://server.com:80/list.xml\`\n\n` +
-        `🚀 *${botName} - Tu aliado en IPTV*${adminMessage}`;
-
-      await bot.sendMessage(chatId, helpMessage, {
-        parse_mode: 'Markdown',
+    } else if (query.data === 'generate') {
+      await handleGenerate(chatId, allowedThreadId, messageId, userId, userMention);
+    } else if (query.data === 'public_lists') {
+      await handlePublicLists(chatId, allowedThreadId, messageId, userId, userMention);
+    } else if (query.data === 'mirror') {
+      userStates[userId].action = 'mirror';
+      await bot.editMessageText(`🪞 ${userMention}, envía la URL de la lista IPTV para buscar un servidor espejo: 📡${adminMessage}`, {
+        chat_id: chatId,
+        message_id: messageId,
         message_thread_id: allowedThreadId,
-        ...mainMenu
+        parse_mode: 'Markdown'
       });
     } else if (query.data.startsWith('vote_')) {
       const [_, voteType, listId] = query.data.split('_');
@@ -551,15 +575,6 @@ bot.on('callback_query', async (query) => {
     }
   } catch (error) {
     logAction('callback_error', { action: query.data, error: error.message });
-    if (error.response?.status === 429) {
-      const retryAfter = error.response.data.parameters.retry_after || 1;
-      await bot.sendMessage(chatId, `⏳ ${userMention}, espera un momento, demasiadas solicitudes. Reintentando en ${retryAfter} segundos...${adminMessage}`, {
-        parse_mode: 'Markdown',
-        message_thread_id: allowedThreadId
-      });
-      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-      return;
-    }
     await bot.sendMessage(chatId, `❌ ${userMention}, error: ${error.message}${adminMessage}`, {
       message_thread_id: allowedThreadId,
       parse_mode: 'Markdown'
@@ -567,7 +582,7 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// Comandos
+// Comando inicial /iptv
 bot.onText(/\/iptv/, async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
@@ -578,8 +593,7 @@ bot.onText(/\/iptv/, async (msg) => {
 
   const response = `🌟 ¡Hola ${userMention}! Bienvenido a *${botName}* 🌟\n\n` +
     `✅ Verifica tus listas IPTV de forma gratuita y rápida.\n` +
-    `🔧 Usa los botones o envía un enlace válido directamente.\n` +
-    `ℹ️ Pulsa "Ayuda" para aprender a usarme.\n\n` +
+    `🔧 Usa los botones para navegar por las opciones.\n\n` +
     `👨‍💼 *Equipo de Administración EntresHijos*`;
   await bot.sendMessage(chatId, response, {
     parse_mode: 'Markdown',
@@ -588,428 +602,121 @@ bot.onText(/\/iptv/, async (msg) => {
   });
 });
 
-// Comando /guia
-bot.onText(/\/guia/, async (msg) => {
+// Comando /espejo
+bot.onText(/\/espejo/, async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
+  const userId = msg.from.id;
   const userMention = getUserMention(msg.from);
   const allowedThreadId = getAllowedThreadId(chatId);
 
   if (!isAllowedContext(chatId, threadId)) return;
 
-  const helpMessage = `🌟 *Bienvenido a ${botName}, ${userMention}!* 🌟\n\n` +
-    `👋 Somos un bot profesional y gratuito exclusivo para *EntresHijos*, diseñado para gestionar y verificar listas IPTV de forma sencilla y eficiente.\n\n` +
-    `📋 *Comandos disponibles*:\n` +
-    `- *🔍 /guia* - Muestra esta guía de uso.\n` +
-    `- *💾 /save [nombre]* - Guarda la última lista verificada con un nombre.\n` +
-    `- *📜 /baul* - Lista todas tus listas guardadas.\n` +
-    `- *✅ /registro* - Muestra tus listas activas, ordenadas por fecha de caducidad.\n` +
-    `- *🎁 /generar* - Obtiene listas IPTV gratuitas verificadas de múltiples fuentes.\n` +
-    `- *📚 /listaspublicas* - Muestra las listas públicas más recientes con votación.\n\n` +
-    `🔧 *Cómo usar el bot*:\n` +
-    `1️⃣ Usa los botones o envía un enlace IPTV válido.\n` +
-    `2️⃣ Recibe un informe detallado al instante.\n\n` +
-    `📡 *Formatos compatibles*:\n` +
-    `- *Xtream*: \`http://server.com:80/get.php?username=xxx&password=yyy\`\n` +
-    `- *M3U/M3U8*: \`http://server.com:80/playlist.m3u\`\n` +
-    `- *TS/HLS*: \`http://server.com:80/stream.ts\`\n` +
-    `- *JSON*: \`http://server.com:80/list.json\`\n` +
-    `- *XML*: \`http://server.com:80/list.xml\`\n\n` +
-    `🚀 *${botName} - Tu aliado en IPTV*${adminMessage}`;
-
-  await bot.sendMessage(chatId, helpMessage, {
+  userStates[userId] = { action: 'mirror' };
+  await bot.sendMessage(chatId, `🪞 ${userMention}, envía la URL de la lista IPTV para buscar un servidor espejo: 📡${adminMessage}`, {
     parse_mode: 'Markdown',
     message_thread_id: allowedThreadId,
     ...mainMenu
   });
 });
 
-// Comando /menu (exclusivo para grupo de administración)
-bot.onText(/\/menu/, async (msg) => {
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id || '0';
-  const userMention = getUserMention(msg.from);
-  const allowedThreadId = getAllowedThreadId(chatId);
-
-  if (String(chatId) !== '-1002565012502' || !isAllowedContext(chatId, threadId)) return;
-
-  const menuMessage = `🛠 *Menú Completo de ${botName} para ${userMention}* 🛠\n\n` +
-    `👋 Bienvenido al panel de comandos completo de *${botName}*. Aquí tienes todas las herramientas disponibles:\n\n` +
-    `📋 *Comandos Públicos*:\n` +
-    `- *🔍 /guia* - Muestra la guía básica para usuarios.\n` +
-    `- *💾 /save [nombre]* - Guarda la última lista verificada con un nombre personalizado.\n` +
-    `- *📜 /baul* - Muestra todas las listas guardadas del usuario.\n` +
-    `- *✅ /registro* - Lista las listas activas guardadas, ordenadas por fecha de caducidad.\n` +
-    `- *🎁 /generar* - Genera y verifica listas IPTV gratuitas de múltiples fuentes.\n` +
-    `- *📚 /listaspublicas* - Muestra las listas públicas más recientes con votación.\n\n` +
-    `🔒 *Comandos de Administración* (solo aquí):\n` +
-    `- *📊 /historial* - Muestra el historial completo de verificaciones de todos los usuarios.\n` +
-    `- *🌟 /iptv* - Comando de bienvenida inicial (uso interno).\n\n` +
-    `🔧 *Cómo funciona*:\n` +
-    `- Envía un enlace IPTV o usa los botones para verificar.\n` +
-    `- Usa /save después de verificar para guardar listas.\n` +
-    `- Las listas favoritas se verifican automáticamente cada 24 horas.\n\n` +
-    `💡 *Nota*: Los comandos de administración son exclusivos de este grupo.\n\n` +
-    `🚀 *${botName} - Gestión Avanzada de IPTV*${adminMessage}`;
-
-  await bot.sendMessage(chatId, menuMessage, {
-    parse_mode: 'Markdown',
-    message_thread_id: allowedThreadId
-  });
-});
-
-// Comando /historial (solo admin)
-bot.onText(/\/historial/, async (msg) => {
-  const chatId = msg.chat.id;
-  const threadId = msg.message_thread_id || '0';
-  const userMention = getUserMention(msg.from);
-  const allowedThreadId = getAllowedThreadId(chatId);
-
-  if (String(chatId) !== '-1002565012502' || !isAllowedContext(chatId, threadId)) return;
-
-  if (Object.keys(userHistory).length === 0) {
-    await bot.sendMessage(chatId, `📜 Hola ${userMention}, aún no hay historial de uso en *${botName}*.${adminMessage}`, {
-      parse_mode: 'Markdown',
-      message_thread_id: allowedThreadId
-    });
-    return;
-  }
-
-  let totalChecks = 0, activeCount = 0;
-  for (const history of Object.values(userHistory)) {
-    totalChecks += history.length;
-    activeCount += history.filter(entry => entry.result.status === 'Activa').length;
-  }
-
-  let historyText = `📜 *Historial de Uso de ${botName}* 📜\n\n` +
-                   `📊 *Estadísticas*: ${totalChecks} verificaciones, ${activeCount} activas\n\n`;
-  for (const [userId, history] of Object.entries(userHistory)) {
-    const user = history[0].url ? await bot.getChatMember(chatId, userId).then(member => member.user) : { username: 'Desconocido', first_name: 'Usuario' };
-    const userMention = getUserMention(user);
-    historyText += `👤 *Usuario*: ${userMention} (ID: ${userId})\n` +
-                   `📊 *Número de usos*: ${history.length}\n` +
-                   `📋 *Detalles*:\n`;
-
-    history.forEach((entry, index) => {
-      const timestamp = entry.timestamp.toLocaleString('es-ES', { timeZone: 'America/Mexico_City' });
-      historyText += `  ${index + 1}. 📅 ${timestamp} - [${escapeMarkdown(entry.url)}](${entry.url})\n`;
-    });
-    historyText += '\n';
-  }
-  historyText += `🚀 *${botName} - Verificación Profesional y Gratuita*${adminMessage}`;
-
-  await bot.sendMessage(chatId, historyText, {
-    parse_mode: 'Markdown',
-    message_thread_id: allowedThreadId
-  });
-});
-
-// Comando /save
-bot.onText(/\/save (.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const name = match[1];
-  const allowedThreadId = getAllowedThreadId(chatId);
-  if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
-
-  if (!userHistory[userId] || !userHistory[userId].length) {
-    await bot.sendMessage(chatId, `❌ ${getUserMention(msg.from)}, no tienes listas recientes para guardar.${adminMessage}`, {
-      parse_mode: 'Markdown',
-      message_thread_id: allowedThreadId
-    });
-    return;
-  }
-
-  const lastUrl = userHistory[userId][userHistory[userId].length - 1].url;
-  if (!userFavorites[userId]) userFavorites[userId] = {};
-  userFavorites[userId][name] = lastUrl;
-  await bot.sendMessage(chatId, `💾 Lista "${name}" guardada: ${lastUrl}${adminMessage}`, {
-    parse_mode: 'Markdown',
-    message_thread_id: allowedThreadId
-  });
-});
-
-// Comando /baul
-bot.onText(/\/baul/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const allowedThreadId = getAllowedThreadId(chatId);
-  if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
-
-  if (!userFavorites[userId] || !Object.keys(userFavorites[userId]).length) {
-    await bot.sendMessage(chatId, `📋 ${getUserMention(msg.from)}, no tienes listas guardadas.${adminMessage}`, {
-      parse_mode: 'Markdown',
-      message_thread_id: allowedThreadId
-    });
-    return;
-  }
-
-  let listText = `📋 Listas guardadas de ${getUserMention(msg.from)}:\n`;
-  for (const [name, url] of Object.entries(userFavorites[userId])) {
-    listText += `- *${name}*: [${escapeMarkdown(url)}](${url})\n`;
-  }
-  listText += adminMessage;
-
-  await bot.sendMessage(chatId, listText, {
-    parse_mode: 'Markdown',
-    message_thread_id: allowedThreadId
-  });
-});
-
-// Comando /registro
-bot.onText(/\/registro/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const allowedThreadId = getAllowedThreadId(chatId);
-  const userMention = getUserMention(msg.from);
-
-  if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
-
-  if (!userFavorites[userId] || !Object.keys(userFavorites[userId]).length) {
-    await bot.sendMessage(chatId, `📋 ${userMention}, no tienes listas guardadas para mostrar.${adminMessage}`, {
-      parse_mode: 'Markdown',
-      message_thread_id: allowedThreadId
-    });
-    return;
-  }
-
-  const activeLists = [];
-  for (const [name, url] of Object.entries(userFavorites[userId])) {
-    const historyEntry = userHistory[userId]?.find(h => h.url === url);
-    if (historyEntry && historyEntry.result.status === 'Activa') {
-      activeLists.push({
-        name,
-        url,
-        expiresAt: historyEntry.result.expiresAt || 'Ilimitada',
-        expiresTimestamp: historyEntry.result.expiresAt === 'Ilimitada' ? Infinity : new Date(historyEntry.result.expiresAt).getTime()
-      });
-    }
-  }
-
-  if (activeLists.length === 0) {
-    await bot.sendMessage(chatId, `📋 ${userMention}, no tienes listas activas guardadas.${adminMessage}`, {
-      parse_mode: 'Markdown',
-      message_thread_id: allowedThreadId
-    });
-    return;
-  }
-
-  activeLists.sort((a, b) => b.expiresTimestamp - a.expiresTimestamp);
-
-  let listText = `📋 Listas activas de ${userMention} (ordenadas por caducidad):\n`;
-  activeLists.forEach(list => {
-    listText += `- *${list.name}*: [${escapeMarkdown(list.url)}](${list.url}) - Expira: ${list.expiresAt}\n`;
-  });
-  listText += adminMessage;
-
-  await bot.sendMessage(chatId, listText, {
-    parse_mode: 'Markdown',
-    message_thread_id: allowedThreadId
-  });
-});
-
-// Obtener eventos deportivos desde TheSportsDB
-async function getSportsEvents() {
-  try {
-    const response = await axiosInstance.get('https://www.thesportsdb.com/api/v1/json/3/eventsday.php?d=' + new Date().toISOString().split('T')[0]);
-    return response.data.events || [];
-  } catch (error) {
-    logAction('sports_events_error', { error: error.message });
-    return [];
-  }
-}
-
-// Comando /generar (generar listas IPTV de múltiples fuentes)
-bot.onText(/\/generar/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const allowedThreadId = getAllowedThreadId(chatId);
-  const userMention = getUserMention(msg.from);
-  if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
-
+// Función para manejar /generar con animación
+async function handleGenerate(chatId, threadId, messageId, userId, userMention) {
   const loadingMessage = await bot.sendMessage(chatId, `⏳ ${userMention}, buscando listas IPTV de múltiples fuentes...${adminMessage}`, {
     parse_mode: 'Markdown',
-    message_thread_id: allowedThreadId
+    message_thread_id: threadId
   });
 
   try {
-    // Fuentes estáticas (repositorios públicos)
     const staticSources = [
       { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España' },
       { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/es.m3u', category: 'España' },
       { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' },
-      { url: 'https://raw.githubusercontent.com/iptv-restream/iptv-channels/master/channels/es.m3u', category: 'España' },
-      { url: 'https://raw.githubusercontent.com/LaSaleta/tv/main/lista.m3u', category: 'España' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/movies.m3u', category: 'Películas' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/music.m3u', category: 'Música' },
-      { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General' },
-      { url: 'https://m3u.cl/lista.m3u', category: 'General' },
-      { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias' },
-      { url: 'https://iptv-org.github.io/iptv/categories/kids.m3u', category: 'Infantil' },
-      { url: 'https://iptv-org.github.io/iptv/categories/adult.m3u', category: 'Adultos' },
-      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/premium.m3u', category: 'Premium' },
-      { url: 'https://iptv-org.github.io/iptv/categories/premium.m3u', category: 'Premium' }
+      { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México' }
     ];
 
-    // Fuentes dinámicas desde APIs públicas
-    const dynamicSources = [];
+    const sourcesToProcess = staticSources.slice(0, 4);
+    await showPercentageAnimation(chatId, threadId, loadingMessage.message_id, `⏳ ${userMention}, procesando listas IPTV...`, sourcesToProcess.length);
 
-    // API de IPTVCat
-    try {
-      const iptvCatResponse = await axiosInstance.get('https://iptvcat.com/spain/');
-      const iptvCatLinks = iptvCatResponse.data.match(/(http[s]?:\/\/[^\s]+\.m3u)/g) || [];
-      dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)' })));
-    } catch (error) {
-      logAction('iptvcat_error', { error: error.message });
-    }
-
-    // Combinar fuentes y evitar repeticiones
-    const allSources = [...staticSources, ...dynamicSources].filter(source => !publicLists.includes(source.url));
     const lists = [];
-    const errors = [];
-
-    // Limitar a un máximo de 5 fuentes para procesar
-    const sourcesToProcess = allSources.slice(0, 5);
-
-    // Mostrar animación de porcentaje
-    await showPercentageAnimation(chatId, allowedThreadId, loadingMessage.message_id, `⏳ ${userMention}, procesando listas IPTV...`, sourcesToProcess.length);
-
     for (const source of sourcesToProcess) {
-      try {
-        const response = await axiosInstance.get(source.url, { timeout: 15000 });
-        if (response.status === 200) {
-          const result = await checkIPTVList(source.url, userId);
-          lists.push({
-            url: source.url,
-            type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U',
-            category: source.category,
-            status: result.status,
-            totalChannels: result.totalChannels,
-            expiresAt: result.expiresAt
-          });
-          publicLists.push(source.url);
-          if (publicLists.length > 100) publicLists.shift();
-        }
-      } catch (error) {
-        errors.push(`- ${source.url} (${source.category}): ${error.message}`);
-      }
-    }
+      const result = await checkIPTVList(source.url, userId);
+      if (result.status === 'Activa') {
+        lists.push({
+          url: source.url,
+          type: source.url.endsWith('.m3u8') ? 'M3U8' : 'M3U',
+          category: source.category,
+          status: result.status,
+          totalChannels: result.totalChannels,
+          expiresAt: result.expiresAt
+        });
+        publicLists.push(source.url);
+        if (publicLists.length > 100) publicLists.shift();
 
-    if (lists.length === 0) {
-      const errorText = `❌ ${userMention}, no se encontraron listas confiables en este momento.\n\n` +
-                        `*Errores encontrados*:\n${errors.join('\n')}${adminMessage}`;
-      await bot.editMessageText(errorText, {
-        chat_id: chatId,
-        message_id: loadingMessage.message_id,
-        message_thread_id: allowedThreadId,
-        parse_mode: 'Markdown'
-      });
-      return;
-    }
-
-    // Guardar listas en Supabase
-    for (const list of lists) {
-      const { error } = await supabase
-        .from('public_lists')
-        .insert({
-          url: list.url,
-          type: list.type,
-          category: list.category,
-          status: list.status,
-          total_channels: list.totalChannels || 0,
-          expires_at: list.expiresAt || 'Desconocida',
+        await supabase.from('public_lists').insert({
+          url: source.url,
+          type: source.url.endsWith('.m3u8') ? 'M3U8' : 'M3U',
+          category: source.category,
+          status: result.status,
+          total_channels: result.totalChannels || 0,
+          expires_at: result.expiresAt || 'Desconocida',
           last_checked: new Date().toISOString()
         });
-      if (error) {
-        logAction('supabase_insert_error', { error: error.message });
       }
     }
 
-    // Obtener eventos deportivos
-    let sportsMessage = '';
-    const sportsLists = lists.filter(list => list.category.toLowerCase().includes('deportes'));
-    if (sportsLists.length > 0) {
-      const events = await getSportsEvents();
-      if (events.length > 0) {
-        sportsMessage = `\n\n⚽ *Eventos deportivos de hoy*:\n`;
-        for (const event of events.slice(0, 3)) {
-          sportsMessage += `- ${event.strEvent} (${event.dateEvent} ${event.strTime})\n` +
-                           `  📺 Disponible en listas de deportes: [Ver listas](#deportes)\n`;
-        }
-      }
-    }
-
-    let responseText = `🎉 ${userMention}, aquí tienes las listas IPTV más recientes (máximo 5):\n\n`;
-    for (const list of lists) {
-      responseText += `- *${list.type} (${list.category})*: [${escapeMarkdown(list.url)}](${list.url})\n` +
-                      `  - Estado: ${list.status}\n` +
-                      `  - Canales: ${list.totalChannels || 'Desconocido'}\n` +
-                      `  - Expira: ${list.expiresAt || 'Desconocida'}\n`;
-
-      if (!userHistory[userId]) userHistory[userId] = [];
-      userHistory[userId].push({ url: list.url, result: list, timestamp: new Date() });
-      if (userHistory[userId].length > 50) userHistory[userId].shift();
-    }
-    responseText += `\n💡 Usa /save [nombre] para guardar una lista.\n` +
-                    `📚 Usa /listaspublicas para ver todas las listas públicas con votación.\n` +
-                    sportsMessage +
-                    adminMessage;
+    let responseText = lists.length > 0
+      ? `🎉 ${userMention}, aquí tienes las listas IPTV generadas:\n\n` +
+        lists.map(list => `- *${list.type} (${list.category})*: [${escapeMarkdown(list.url)}](${list.url})\n  - Canales: ${list.totalChannels || 'Desconocido'}\n  - Expira: ${list.expiresAt || 'Desconocida'}`).join('\n') +
+        `\n\n${adminMessage}`
+      : `❌ ${userMention}, no se encontraron listas activas en este momento.${adminMessage}`;
 
     await bot.editMessageText(responseText, {
       chat_id: chatId,
       message_id: loadingMessage.message_id,
-      message_thread_id: allowedThreadId,
-      parse_mode: 'Markdown'
+      message_thread_id: threadId,
+      parse_mode: 'Markdown',
+      ...mainMenu
     });
   } catch (error) {
-    logAction('generate_error', { error: error.message });
     await bot.editMessageText(`❌ ${userMention}, error al generar listas: ${error.message}${adminMessage}`, {
       chat_id: chatId,
       message_id: loadingMessage.message_id,
-      message_thread_id: allowedThreadId,
-      parse_mode: 'Markdown'
+      message_thread_id: threadId,
+      parse_mode: 'Markdown',
+      ...mainMenu
     });
   }
-});
+}
 
-// Comando /listaspublicas
-bot.onText(/\/listaspublicas/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const allowedThreadId = getAllowedThreadId(chatId);
-  const userMention = getUserMention(msg.from);
-  if (!isAllowedContext(chatId, msg.message_thread_id || '0')) return;
+// Función para manejar listas públicas
+async function handlePublicLists(chatId, threadId, messageId, userId, userMention) {
+  const loadingMessage = await bot.sendMessage(chatId, `⏳ ${userMention}, cargando listas públicas...${adminMessage}`, {
+    parse_mode: 'Markdown',
+    message_thread_id: threadId
+  });
 
   const { data: lists, error } = await supabase
     .from('public_lists')
     .select('*')
     .order('last_checked', { ascending: false })
-    .limit(5); // Limitar a 5 listas más recientes
+    .limit(5);
 
-  if (error) {
-    logAction('supabase_fetch_error', { error: error.message });
-    await bot.sendMessage(chatId, `❌ ${userMention}, error al obtener listas públicas: ${error.message}${adminMessage}`, {
+  if (error || !lists || lists.length === 0) {
+    await bot.editMessageText(`📚 ${userMention}, no hay listas públicas disponibles en este momento. Usa "Generar Listas" para crear nuevas.${adminMessage}`, {
+      chat_id: chatId,
+      message_id: loadingMessage.message_id,
+      message_thread_id: threadId,
       parse_mode: 'Markdown',
-      message_thread_id: allowedThreadId
+      ...mainMenu
     });
     return;
   }
 
-  if (!lists || lists.length === 0) {
-    await bot.sendMessage(chatId, `📚 ${userMention}, no hay listas públicas disponibles en este momento. Usa /generar para crear nuevas listas.${adminMessage}`, {
-      parse_mode: 'Markdown',
-      message_thread_id: allowedThreadId
-    });
-    return;
-  }
+  await showPercentageAnimation(chatId, threadId, loadingMessage.message_id, `⏳ ${userMention}, procesando listas públicas...`, lists.length);
 
-  let responseText = `📚 *Listas públicas más recientes (máximo 5)*:\n\n`;
+  let responseText = `📚 *Listas públicas más recientes*:\n\n`;
+  const keyboard = [];
   for (const list of lists) {
     const { data: votes } = await supabase
       .from('votes')
@@ -1020,34 +727,27 @@ bot.onText(/\/listaspublicas/, async (msg) => {
     const downvotes = votes.filter(v => v.vote_type === 'downvote').length;
 
     responseText += `- *${list.type} (${list.category})*: [${escapeMarkdown(list.url)}](${list.url})\n` +
-                    `  - Estado: ${list.status}\n` +
-                    `  - Canales: ${list.total_channels || 'Desconocido'}\n` +
-                    `  - Expira: ${list.expires_at || 'Desconocida'}\n` +
-                    `  - 👍 Me gusta: ${upvotes} | 👎 No funciona: ${downvotes}\n\n`;
+      `  - Estado: ${list.status}\n` +
+      `  - Canales: ${list.total_channels || 'Desconocido'}\n` +
+      `  - Expira: ${list.expires_at || 'Desconocida'}\n` +
+      `  - 👍 ${upvotes} | 👎 ${downvotes}\n\n`;
+    keyboard.push([
+      { text: `👍 Me gusta (${upvotes})`, callback_data: `vote_upvote_${list.id}` },
+      { text: `👎 No funciona (${downvotes})`, callback_data: `vote_downvote_${list.id}` }
+    ]);
   }
   responseText += adminMessage;
 
-  await bot.sendMessage(chatId, responseText, {
+  await bot.editMessageText(responseText, {
+    chat_id: chatId,
+    message_id: loadingMessage.message_id,
+    message_thread_id: threadId,
     parse_mode: 'Markdown',
-    message_thread_id: allowedThreadId,
-    reply_markup: {
-      inline_keyboard: lists.map(list => {
-        const { data: votes } = supabase
-          .from('votes')
-          .select('vote_type')
-          .eq('list_id', list.id);
-        const upvotes = votes.filter(v => v.vote_type === 'upvote').length;
-        const downvotes = votes.filter(v => v.vote_type === 'downvote').length;
-        return [
-          { text: `👍 Me gusta (${upvotes})`, callback_data: `vote_upvote_${list.id}` },
-          { text: `👎 No funciona (${downvotes})`, callback_data: `vote_downvote_${list.id}` }
-        ];
-      })
-    }
+    reply_markup: { inline_keyboard: keyboard }
   });
-});
+}
 
-// Procesar URLs IPTV (solo si no es un comando)
+// Procesar URLs IPTV
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const threadId = msg.message_thread_id || '0';
@@ -1056,29 +756,16 @@ bot.on('message', async (msg) => {
   const userMention = getUserMention(msg.from);
   const allowedThreadId = getAllowedThreadId(chatId);
 
-  if (!isAllowedContext(chatId, threadId)) return;
+  if (!isAllowedContext(chatId, threadId) || text.startsWith('/')) return;
 
   if (!userStates[userId]) userStates[userId] = {};
 
-  // Ignorar mensajes que sean comandos
-  if (text.startsWith('/')) return;
-
   const urlMatch = text.match(/(http|https):\/\/[^\s]+/);
-  if ((userStates[userId].action === 'check' || !userStates[userId].action) && urlMatch) {
+  if (urlMatch && (userStates[userId].action === 'check' || userStates[userId].action === 'mirror')) {
     const url = urlMatch[0];
 
     if (!isValidIPTVFormat(url)) {
-      const invalidMessage = `📢 Hola ${userMention}, el formato del enlace no es válido 📢\n\n` +
-        `❌ El enlace proporcionado no corresponde a una lista IPTV soportada.\n` +
-        `✅ *Formatos aceptados*:\n` +
-        `- *Xtream*: \`http://server.com:80/get.php?username=xxx&password=yyy\`\n` +
-        `- *M3U/M3U8*: \`http://server.com:80/playlist.m3u\`\n` +
-        `- *TS/HLS*: \`http://server.com:80/stream.ts\`\n` +
-        `- *JSON*: \`http://server.com:80/list.json\`\n` +
-        `- *XML*: \`http://server.com:80/list.xml\`\n\n` +
-        `🔧 Por favor, envía un enlace en uno de estos formatos.\n` +
-        `🚀 *${botName} - Verificación Profesional*${adminMessage}`;
-      await bot.sendMessage(chatId, invalidMessage, {
+      await bot.sendMessage(chatId, `❌ ${userMention}, formato no válido. Usa un enlace IPTV soportado (M3U, Xtream, etc.).${adminMessage}`, {
         parse_mode: 'Markdown',
         message_thread_id: allowedThreadId,
         ...mainMenu
@@ -1086,146 +773,164 @@ bot.on('message', async (msg) => {
       return;
     }
 
-    const checkingMessage = await bot.sendMessage(chatId, `🔎 ${userMention}, verificando ${escapeMarkdown(url)}...${adminMessage}`, {
-      parse_mode: 'Markdown',
-      message_thread_id: allowedThreadId
-    });
+    if (userStates[userId].action === 'check') {
+      const checkingMessage = await bot.sendMessage(chatId, `🔎 ${userMention}, verificando ${escapeMarkdown(url)}...${adminMessage}`, {
+        parse_mode: 'Markdown',
+        message_thread_id: allowedThreadId
+      });
 
-    const result = await checkIPTVList(url, userId);
+      const result = await checkIPTVList(url, userId);
+      userHistory[userId] = userHistory[userId] || [];
+      userHistory[userId].push({ url, result, timestamp: new Date() });
+      if (userHistory[userId].length > 50) userHistory[userId].shift();
 
-    if (!userHistory[userId]) userHistory[userId] = [];
-    userHistory[userId].push({ url, result, timestamp: new Date() });
-    if (userHistory[userId].length > 50) userHistory[userId].shift();
-
-    const { text: responseText } = formatResponse(msg, result, url);
-
-    await bot.editMessageText(responseText, {
-      chat_id: chatId,
-      message_id: checkingMessage.message_id,
-      message_thread_id: allowedThreadId,
-      parse_mode: 'Markdown',
-      ...mainMenu
-    });
+      const { text: responseText } = formatResponse(msg, result, url);
+      await bot.editMessageText(responseText, {
+        chat_id: chatId,
+        message_id: checkingMessage.message_id,
+        message_thread_id: allowedThreadId,
+        parse_mode: 'Markdown',
+        ...mainMenu
+      });
+    } else if (userStates[userId].action === 'mirror') {
+      await handleMirror(chatId, allowedThreadId, url, userId, userMention);
+    }
 
     userStates[userId].action = null;
   }
 });
 
-// Verificación programada de listas favoritas (cada 24 horas a medianoche)
-cron.schedule('0 0 * * *', async () => {
-  for (const [userId, favorites] of Object.entries(userFavorites)) {
-    for (const [name, url] of Object.entries(favorites)) {
-      const lastResult = userHistory[userId]?.find(h => h.url === url)?.result.status;
-      const result = await checkIPTVList(url, userId);
-      if (lastResult && result.status !== lastResult) {
-        const chatId = ALLOWED_CHAT_IDS[0].chatId;
-        const allowedThreadId = getAllowedThreadId(chatId);
-        await bot.sendMessage(chatId, `📢 La lista "${name}" de ${userId} cambió a *${result.status}*!${adminMessage}`, {
-          parse_mode: 'Markdown',
-          message_thread_id: allowedThreadId
+// Función para manejar espejos
+async function handleMirror(chatId, threadId, url, userId, userMention) {
+  const loadingMessage = await bot.sendMessage(chatId, `🪞 ${userMention}, verificando ${escapeMarkdown(url)} y buscando espejos...${adminMessage}`, {
+    parse_mode: 'Markdown',
+    message_thread_id: threadId
+  });
+
+  const result = await checkIPTVList(url, userId);
+  if (result.status === 'Activa') {
+    await bot.editMessageText(`✅ ${userMention}, la lista ${escapeMarkdown(url)} está activa. No se necesita un espejo.${adminMessage}`, {
+      chat_id: chatId,
+      message_id: loadingMessage.message_id,
+      message_thread_id: threadId,
+      parse_mode: 'Markdown',
+      ...mainMenu
+    });
+    return;
+  }
+
+  const { data: mirrors, error } = await supabase
+    .from('mirrors')
+    .select('*')
+    .eq('original_url', url)
+    .eq('status', 'Active');
+
+  if (error || !mirrors || mirrors.length === 0) {
+    // Buscar espejos simulados (esto podría expandirse con una API real)
+    const mirrorCandidates = [
+      url.replace('server.com', 'mirror1.com'),
+      url.replace('server.com', 'mirror2.com')
+    ];
+
+    await showPercentageAnimation(chatId, threadId, loadingMessage.message_id, `🪞 ${userMention}, buscando servidores espejo...`, mirrorCandidates.length);
+
+    let activeMirror = null;
+    for (const candidate of mirrorCandidates) {
+      const mirrorResult = await checkIPTVList(candidate, userId);
+      if (mirrorResult.status === 'Activa') {
+        activeMirror = candidate;
+        await supabase.from('mirrors').insert({
+          original_url: url,
+          mirror_url: candidate,
+          status: 'Active',
+          last_checked: new Date().toISOString()
         });
+        break;
       }
-      if (!userHistory[userId]) userHistory[userId] = [];
-      userHistory[userId].push({ url, result, timestamp: new Date() });
-      if (userHistory[userId].length > 50) userHistory[userId].shift();
+    }
+
+    const responseText = activeMirror
+      ? `✅ ${userMention}, la lista original está caída, pero encontré un espejo activo:\n` +
+        `[${escapeMarkdown(activeMirror)}](${activeMirror})${adminMessage}`
+      : `❌ ${userMention}, la lista está caída y no se encontraron espejos activos.${adminMessage}`;
+
+    await bot.editMessageText(responseText, {
+      chat_id: chatId,
+      message_id: loadingMessage.message_id,
+      message_thread_id: threadId,
+      parse_mode: 'Markdown',
+      ...mainMenu
+    });
+  } else {
+    await bot.editMessageText(`✅ ${userMention}, la lista original está caída, pero aquí tienes un espejo activo:\n` +
+      `[${escapeMarkdown(mirrors[0].mirror_url)}](${mirrors[0].mirror_url})${adminMessage}`, {
+      chat_id: chatId,
+      message_id: loadingMessage.message_id,
+      message_thread_id: threadId,
+      parse_mode: 'Markdown',
+      ...mainMenu
+    });
+  }
+}
+
+// Verificación programada de espejos (cada 6 horas)
+cron.schedule('0 */6 * * *', async () => {
+  const { data: mirrors } = await supabase.from('mirrors').select('*');
+  if (!mirrors) return;
+
+  for (const mirror of mirrors) {
+    const result = await checkIPTVList(mirror.mirror_url, 'cron');
+    await supabase
+      .from('mirrors')
+      .update({ status: result.status === 'Activa' ? 'Active' : 'Inactive', last_checked: new Date().toISOString() })
+      .eq('id', mirror.id);
+
+    if (result.status !== 'Activa') {
+      const chatId = ALLOWED_CHAT_IDS[0].chatId;
+      const threadId = getAllowedThreadId(chatId);
+      await bot.sendMessage(chatId, `📢 El espejo ${escapeMarkdown(mirror.mirror_url)} para ${escapeMarkdown(mirror.original_url)} está inactivo.${adminMessage}`, {
+        parse_mode: 'Markdown',
+        message_thread_id: threadId
+      });
     }
   }
-});
+}, { scheduled: true, timezone: 'Europe/Madrid' });
 
-// Generar listas públicas cada 24 horas a las 12:00 PM (hora de España)
+// Generar listas públicas cada 24 horas
 cron.schedule('0 12 * * *', async () => {
   const chatId = ALLOWED_CHAT_IDS[0].chatId;
-  const allowedThreadId = getAllowedThreadId(chatId);
+  const threadId = getAllowedThreadId(chatId);
   await bot.sendMessage(chatId, `⏳ Generando nuevas listas públicas...${adminMessage}`, {
     parse_mode: 'Markdown',
-    message_thread_id: allowedThreadId
+    message_thread_id: threadId
   });
 
   const staticSources = [
     { url: 'https://iptv-org.github.io/iptv/countries/es.m3u', category: 'España' },
     { url: 'https://iptv-org.github.io/iptv/languages/spa.m3u', category: 'Español' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/es.m3u', category: 'España' },
-    { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' },
-    { url: 'https://raw.githubusercontent.com/iptv-restream/iptv-channels/master/channels/es.m3u', category: 'España' },
-    { url: 'https://raw.githubusercontent.com/LaSaleta/tv/main/lista.m3u', category: 'España' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/mx.m3u', category: 'México' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/ar.m3u', category: 'Argentina' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/us.m3u', category: 'USA' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/uk.m3u', category: 'UK' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/sports.m3u', category: 'Deportes' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/movies.m3u', category: 'Películas' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/music.m3u', category: 'Música' },
-    { url: 'https://iptvcat.net/static/uploads/iptv_list_66ebeb47eecf0.m3u', category: 'General' },
-    { url: 'https://m3u.cl/lista.m3u', category: 'General' },
-    { url: 'https://iptv-org.github.io/iptv/categories/news.m3u', category: 'Noticias' },
-    { url: 'https://iptv-org.github.io/iptv/categories/kids.m3u', category: 'Infantil' },
-    { url: 'https://iptv-org.github.io/iptv/categories/adult.m3u', category: 'Adultos' },
-    { url: 'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/premium.m3u', category: 'Premium' },
-    { url: 'https://iptv-org.github.io/iptv/categories/premium.m3u', category: 'Premium' }
+    { url: 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8', category: 'General' }
   ];
 
-  const dynamicSources = [];
-  try {
-    const iptvCatResponse = await axiosInstance.get('https://iptvcat.com/spain/');
-    const iptvCatLinks = iptvCatResponse.data.match(/(http[s]?:\/\/[^\s]+\.m3u)/g) || [];
-    dynamicSources.push(...iptvCatLinks.map(url => ({ url, category: 'España (IPTVCat)' })));
-  } catch (error) {
-    logAction('iptvcat_error', { error: error.message });
-  }
-
-  const allSources = [...staticSources, ...dynamicSources].filter(source => !publicLists.includes(source.url));
-  const sourcesToProcess = allSources.slice(0, 5); // Limitar a 5 fuentes
-  const lists = [];
-
-  for (const source of sourcesToProcess) {
-    try {
-      const response = await axiosInstance.get(source.url, { timeout: 15000 });
-      if (response.status === 200) {
-        const result = await checkIPTVList(source.url, 'cron');
-        lists.push({
-          url: source.url,
-          type: source.url.endsWith('.m3u8') ? 'M3U8' : source.url.endsWith('.json') ? 'JSON' : source.url.endsWith('.xml') ? 'XML' : 'M3U',
-          category: source.category,
-          status: result.status,
-          totalChannels: result.totalChannels,
-          expiresAt: result.expiresAt
-        });
-        publicLists.push(source.url);
-        if (publicLists.length > 100) publicLists.shift();
-      }
-    } catch (error) {
-      logAction('cron_generate_error', { url: source.url, error: error.message });
-    }
-  }
-
-  for (const list of lists) {
-    const { error } = await supabase
-      .from('public_lists')
-      .insert({
-        url: list.url,
-        type: list.type,
-        category: list.category,
-        status: list.status,
-        total_channels: list.totalChannels || 0,
-        expires_at: list.expiresAt || 'Desconocida',
+  for (const source of staticSources) {
+    const result = await checkIPTVList(source.url, 'cron');
+    if (result.status === 'Activa') {
+      await supabase.from('public_lists').insert({
+        url: source.url,
+        type: source.url.endsWith('.m3u8') ? 'M3U8' : 'M3U',
+        category: source.category,
+        status: result.status,
+        total_channels: result.totalChannels || 0,
+        expires_at: result.expiresAt || 'Desconocida',
         last_checked: new Date().toISOString()
       });
-    if (error) {
-      logAction('supabase_insert_error', { error: error.message });
     }
   }
 
-  await bot.sendMessage(chatId, `✅ Nuevas listas públicas generadas. Usa /listaspublicas para verlas.${adminMessage}`, {
+  await bot.sendMessage(chatId, `✅ Nuevas listas públicas generadas.${adminMessage}`, {
     parse_mode: 'Markdown',
-    message_thread_id: allowedThreadId
+    message_thread_id: threadId
   });
 }, { scheduled: true, timezone: 'Europe/Madrid' });
-
-// Manejo de errores global
-bot.on('polling_error', (error) => logAction('polling_error', { error: error.message }));
-bot.on('webhook_error', (error) => logAction('webhook_error', { error: error.message }));
-
-console.log(`🚀 ${botName} iniciado correctamente`);
 
 // Mantener servidor activo (para UptimeRobot)
 setInterval(() => {
@@ -1233,5 +938,7 @@ setInterval(() => {
     .then(() => logAction('keep_alive', { status: 'success' }))
     .catch(error => logAction('keep_alive_error', { error: error.message }));
 }, 5 * 60 * 1000);
+
+console.log(`🚀 ${botName} iniciado correctamente`);
 
 module.exports = bot;
