@@ -1053,12 +1053,14 @@ bot.on('webhook_error', (error) => {
   await restructureDatabase();
   logAction('bot_initialized', { status: 'success' });
 
-  // Iniciar polling
+  // Iniciar polling y ejecutar generatePublicLists después de que el bot esté listo
   bot.launch()
-    .then(() => console.log('Bot started with polling'))
+    .then(async () => {
+      console.log('Bot started with polling');
+      console.log('bot.sendMessage exists after launch:', typeof bot.sendMessage === 'function');
+      await generatePublicLists();
+    })
     .catch(error => console.error('Error starting bot with polling:', error.message));
-
-  await generatePublicLists();
 
   app.listen(PORT, () => {
     console.log(`🚀 Servidor en puerto ${PORT}`);
