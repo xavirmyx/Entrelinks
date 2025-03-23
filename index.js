@@ -23,9 +23,8 @@ const supabaseUrl = 'https://jxpdivtccnhsspvwfpdl.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4cGRpdnRjY25oc3NwdndmcGRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDI2NDc1MzYsImV4cCI6MjA1ODIyMzUzNn0.oVV31TUxJeCEZZByLb5gsvl9vpme8XZ9XnOKoaZFJKI';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// IDs permitidos
+// IDs permitidos (solo el grupo de administradores)
 const ALLOWED_CHAT_IDS = [
-  { chatId: '-1002348662107', threadId: '53411', name: 'EntresHijos' },
   { chatId: '-1002565012502', threadId: null, name: 'BotChecker_IPTV_ParaG' }
 ];
 
