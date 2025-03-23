@@ -27,6 +27,7 @@ let bot;
 try {
   bot = new Telegraf(process.env.BOT_TOKEN);
   console.log('Bot initialized successfully');
+  console.log('bot.sendMessage exists:', typeof bot.sendMessage === 'function');
 } catch (error) {
   console.error('Error initializing Telegraf bot:', error.message);
   process.exit(1); // Salir del proceso con un código de error
@@ -37,7 +38,6 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 // Configuración de variables globales
 const BOT_NAME = 'EntrelinksBot';
 const PORT = process.env.PORT || 10000;
-const WEBHOOK_URL = 'https://entrelinks.onrender.com';
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 const ALLOWED_CHAT_IDS = [
   { chatId: ADMIN_CHAT_ID, threadId: null }
@@ -54,9 +54,8 @@ const axiosInstance = axios.create({
   headers: { 'User-Agent': 'EntrelinksBot/1.0' }
 });
 
-// Configuración de Express y Webhook
+// Configuración de Express
 app.use(express.json());
-app.use(bot.webhookCallback(`/bot${process.env.BOT_TOKEN}`));
 
 // Fuentes de listas públicas
 const publicSources = [
@@ -674,7 +673,6 @@ bot.on('callback_query', async (ctx) => {
   const chatId = ctx.chat.id;
   const threadId = ctx.update.callback_query.message?.message_thread_id || '0';
   const userId = ctx.from.id;
-  const messageId = ctx.update.callback_query.message.message_id;
   const userMention = getUserMention(ctx.from);
   const allowedThreadId = getAllowedThreadId(chatId);
 
@@ -1054,12 +1052,15 @@ bot.on('webhook_error', (error) => {
 (async () => {
   await restructureDatabase();
   logAction('bot_initialized', { status: 'success' });
+
+  // Iniciar polling
+  bot.launch()
+    .then(() => console.log('Bot started with polling'))
+    .catch(error => console.error('Error starting bot with polling:', error.message));
+
   await generatePublicLists();
 
   app.listen(PORT, () => {
     console.log(`🚀 Servidor en puerto ${PORT}`);
-    bot.telegram.setWebhook(`${WEBHOOK_URL}/bot${process.env.BOT_TOKEN}`)
-      .then(() => logAction('webhook_set', { url: `${WEBHOOK_URL}/bot${process.env.BOT_TOKEN}` }))
-      .catch(error => console.error('Error setting webhook:', error.message));
   });
 })();
