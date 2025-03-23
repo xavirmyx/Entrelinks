@@ -9,6 +9,12 @@ import cron from 'node-cron';
 
 dotenv.config();
 
+// Agregar depuración para verificar las variables de entorno
+console.log('SUPABASE_URL:', process.env.SUPABASE_URL);
+console.log('SUPABASE_KEY:', process.env.SUPABASE_KEY);
+console.log('BOT_TOKEN:', process.env.BOT_TOKEN);
+console.log('ADMIN_CHAT_ID:', process.env.ADMIN_CHAT_ID);
+
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
