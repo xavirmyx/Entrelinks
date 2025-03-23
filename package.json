@@ -1,18 +1,17 @@
 {
   "name": "entrelinks",
   "version": "1.0.0",
-  "description": "Bot para verificar listas IPTV",
+  "description": "",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.4",
-    "axios": "^1.7.7",
-    "express": "^4.21.0",
-    "node-cron": "^3.0.3",
-    "node-telegram-bot-api": "^0.66.0",
-    "pastebin-js": "^1.0.5",
-    "xml2js": "^0.6.2"
+    "node-telegram-bot-api": "^0.66.0", // Usa la última versión
+    "express": "^4.17.1",
+    "node-cron": "^3.0.0",
+    "axios": "^0.21.1",
+    "@supabase/supabase-js": "^2.0.0",
+    "xml2js": "^0.4.23"
   }
 }

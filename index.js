@@ -125,12 +125,12 @@ async function restructureDatabase() {
 
   for (const [tableName, schema] of Object.entries(requiredTables)) {
     try {
-      // Verificar si la tabla existe usando una consulta directa
+      // Verificar si la tabla existe usando information_schema.tables
       const { data: tableExists, error: tableExistsError } = await supabase
-        .from('pg_tables')
-        .select('tablename')
-        .eq('schemaname', 'public')
-        .eq('tablename', tableName);
+        .from('information_schema.tables')
+        .select('table_name')
+        .eq('table_schema', 'public')
+        .eq('table_name', tableName);
 
       if (tableExistsError) {
         logAction('table_exists_error', { table: tableName, error: tableExistsError.message });
@@ -174,22 +174,8 @@ async function restructureDatabase() {
         }
       }
     } catch (error) {
+      // Solo registrar el error en los logs, no enviar a Telegram
       logAction('database_restructure_error', { table: tableName, error: error.message });
-      // Enviar notificación al grupo si falla la creación de tablas
-      const chatId = ALLOWED_CHAT_IDS[0].chatId;
-      const threadId = getAllowedThreadId(chatId);
-      const escapedErrorMessage = escapeMarkdown(error.message);
-      try {
-        await bot.sendMessage(chatId, `⚠️ Error al reestructurar la base de datos: ${escapedErrorMessage}${adminMessage}`, {
-          parse_mode: 'Markdown',
-          message_thread_id: threadId
-        });
-      } catch (telegramError) {
-        // Fallback a texto plano si Markdown falla
-        await bot.sendMessage(chatId, `⚠️ Error al reestructurar la base de datos: ${error.message}${adminMessage}`, {
-          message_thread_id: threadId
-        });
-      }
     }
   }
 }
@@ -292,6 +278,12 @@ async function checkIPTVList(url, userId) {
 
       const response = await axiosInstance.get(apiUrl);
       const { user_info, server_info } = response.data;
+
+      // Verificar si user_info y server_info existen
+      if (!user_info || !server_info) {
+        throw new Error('Respuesta de la API Xtream Codes no contiene user_info o server_info');
+      }
+
       const streams = await axiosInstance.get(`${apiUrl}&action=get_live_streams`);
 
       logAction('check_xtream_success', { url, channels: streams.data.length });
@@ -306,7 +298,7 @@ async function checkIPTVList(url, userId) {
         activeConnections: user_info.active_cons,
         maxConnections: user_info.max_connections,
         totalChannels: streams.data.length,
-        timezone: server_info.timezone || 'Desconocida'
+        timezone: server_info.timezone || 'Desconocida' // Fallback si timezone no está disponible
       };
     }
 
@@ -615,7 +607,11 @@ bot.on('callback_query', async (query) => {
         message_id: messageId,
         message_thread_id: allowedThreadId,
         parse_mode: 'Markdown',
-        ...mainMenu
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⬅️ Regresar', callback_data: 'back_to_main' }]
+          ]
+        }
       });
     } else if (query.data.startsWith('vote_')) {
       const [_, voteType, listId] = query.data.split('_');
@@ -629,7 +625,13 @@ bot.on('callback_query', async (query) => {
       if (existingVote) {
         await bot.sendMessage(chatId, `❌ ${userMention}, ya has votado por esta lista.${adminMessage}`, {
           parse_mode: 'Markdown',
-          message_thread_id: allowedThreadId
+          message_thread_id: allowedThreadId,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '⬅️ Regresar a Listas Públicas', callback_data: 'public_lists' }],
+              [{ text: '🏠 Menú Principal', callback_data: 'back_to_main' }]
+            ]
+          }
         });
         return;
       }
@@ -668,9 +670,25 @@ bot.on('callback_query', async (query) => {
             [
               { text: `👍 Me gusta (${upvotes})`, callback_data: `vote_upvote_${listId}` },
               { text: `👎 No funciona (${downvotes})`, callback_data: `vote_downvote_${listId}` }
+            ],
+            [
+              { text: '⬅️ Regresar a Listas Públicas', callback_data: 'public_lists' },
+              { text: '🏠 Menú Principal', callback_data: 'back_to_main' }
             ]
           ]
         }
+      });
+    } else if (query.data === 'back_to_main') {
+      const welcomeMessage = `🌟 ¡Hola ${userMention}! Bienvenido a *${botName}* 🌟\n\n` +
+        `✅ Verifica tus listas IPTV de forma gratuita y rápida.\n` +
+        `🔧 Usa los botones para navegar por las opciones.\n\n` +
+        `👨‍💼 *Equipo de Administración EntresHijos*`;
+      await bot.editMessageText(welcomeMessage, {
+        chat_id: chatId,
+        message_id: messageId,
+        message_thread_id: allowedThreadId,
+        parse_mode: 'Markdown',
+        ...mainMenu
       });
     }
   } catch (error) {
@@ -833,7 +851,11 @@ async function handleGenerate(chatId, threadId, messageId, userId, userMention) 
       message_id: loadingMessage.message_id,
       message_thread_id: threadId,
       parse_mode: 'Markdown',
-      ...mainMenu
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '⬅️ Regresar', callback_data: 'back_to_main' }]
+        ]
+      }
     });
   } catch (error) {
     logAction('generate_error', { error: error.message });
@@ -894,16 +916,17 @@ async function handlePublicLists(chatId, threadId, messageId, userId, userMentio
 
   let responseText = `📚 *Listas públicas más recientes*:\n\n`;
   const keyboard = [];
-  for (const list of lists) {
-    const { data: votes } = await supabase
+  lists.forEach((list, index) => {
+    const { data: votes } = supabase
       .from('votes')
       .select('vote_type')
-      .eq('list_id', list.id);
+      .eq('list_id', list.id)
+      .single();
 
-    const upvotes = votes.filter(v => v.vote_type === 'upvote').length;
-    const downvotes = votes.filter(v => v.vote_type === 'downvote').length;
+    const upvotes = votes ? votes.filter(v => v.vote_type === 'upvote').length : 0;
+    const downvotes = votes ? votes.filter(v => v.vote_type === 'downvote').length : 0;
 
-    responseText += `- *${list.type} (${list.category})*: [${escapeMarkdown(list.url)}](${list.url})\n` +
+    responseText += `${index + 1}- *${list.type} (${list.category})*: [${escapeMarkdown(list.url)}](${list.url})\n` +
       `  - Estado: ${list.status}\n` +
       `  - Canales: ${list.total_channels || 'Desconocido'}\n` +
       `  - Expira: ${list.expires_at || 'Desconocida'}\n` +
@@ -912,8 +935,10 @@ async function handlePublicLists(chatId, threadId, messageId, userId, userMentio
       { text: `👍 Me gusta (${upvotes})`, callback_data: `vote_upvote_${list.id}` },
       { text: `👎 No funciona (${downvotes})`, callback_data: `vote_downvote_${list.id}` }
     ]);
-  }
+  });
   responseText += adminMessage;
+
+  keyboard.push([{ text: '⬅️ Regresar', callback_data: 'back_to_main' }]);
 
   await bot.editMessageText(responseText, {
     chat_id: chatId,
@@ -967,7 +992,11 @@ bot.on('message', async (msg) => {
         message_id: checkingMessage.message_id,
         message_thread_id: allowedThreadId,
         parse_mode: 'Markdown',
-        ...mainMenu
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '⬅️ Regresar', callback_data: 'back_to_main' }]
+          ]
+        }
       });
     } else if (userStates[userId].action === 'mirror') {
       await handleMirror(chatId, allowedThreadId, url, userId, userMention);
@@ -991,7 +1020,11 @@ async function handleMirror(chatId, threadId, url, userId, userMention) {
       message_id: loadingMessage.message_id,
       message_thread_id: threadId,
       parse_mode: 'Markdown',
-      ...mainMenu
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '⬅️ Regresar', callback_data: 'back_to_main' }]
+        ]
+      }
     });
     return;
   }
@@ -1009,7 +1042,11 @@ async function handleMirror(chatId, threadId, url, userId, userMention) {
       message_id: loadingMessage.message_id,
       message_thread_id: threadId,
       parse_mode: 'Markdown',
-      ...mainMenu
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '⬅️ Regresar', callback_data: 'back_to_main' }]
+        ]
+      }
     });
     return;
   }
@@ -1074,7 +1111,11 @@ async function handleMirror(chatId, threadId, url, userId, userMention) {
     message_id: loadingMessage.message_id,
     message_thread_id: threadId,
     parse_mode: 'Markdown',
-    ...mainMenu
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: '⬅️ Regresar', callback_data: 'back_to_main' }]
+      ]
+    }
   });
 }
 
